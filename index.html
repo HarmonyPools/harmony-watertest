@@ -45,13 +45,13 @@
     function round2(n){ return Math.round(n*100)/100; }
     function clamp(n,min,max){ return Math.max(min, Math.min(max,n)); }
 
-    // FC target: 3 ppm (except SWG = 5 ppm)
-    function targetFC(sanitizer){ return sanitizer==='swg' ? 5 : 3; }
+    // Harmony Pools policy
+    function targetFC(sanitizer){ return sanitizer==='swg' ? 5 : 3; } // SWG 5 ppm, others 3 ppm
 
-    // Lower pH (acid) estimate
+    // Lower pH with acid (approx table, fl oz 31.45% per 10k per ΔpH)
     function acidFlOzForDeltaPH(delta, gal, TA){
       if (delta<=0) return 0;
-      const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32}; // fl oz per 10k gal @31.45%
+      const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32};
       const keys=Object.keys(t).map(parseFloat).sort((a,b)=>a-b);
       let need=t[keys[keys.length-1]];
       for(let i=0;i<keys.length;i++){
@@ -66,25 +66,29 @@
       return fl;
     }
 
-    // Raise pH (soda ash) estimate — conservative rule: ~6 oz per 10k gal raises ~0.2 pH units
+    // Raise pH with soda ash — ~12 oz / 10k raises ≈0.2 pH (field rule)
     function lbsSodaAshForDeltaPH(delta, gal){
       if (delta<=0) return 0;
-      const ozPer10kPer0_2 = 6;
+      const ozPer10kPer0_2 = 12;
       const ounces = (delta/0.2) * ozPer10kPer0_2 * (gal/10000);
-      return ounces/16; // to lbs
+      return ounces/16; // lb
     }
+
+    // === Your overrides ===
+    // Liquid chlorine: 1 gal / 10,000 gal = +1 ppm FC
+    function galLCForFC(dFC, gal){ if(dFC<=0) return 0; return dFC * (gal/10000); }
+
+    // Dichlor 56%: 1 lb / 10,000 gal = +1 ppm FC; CYA gain ≈ 6 ppm per lb / 10k
+    function lbsDichlorForFC(dFC, gal){
+      if(dFC<=0) return {lbs:0,cyaGain:0};
+      const lbs = dFC * (gal/10000);
+      const cyaGain = lbs * 6 * (10000/gal); // ≈ dFC * 6 ppm
+      return {lbs,cyaGain};
+    }
+    // =======================
 
     function lbsBicarbForTA(dTA, gal){ if(dTA<=0) return 0; return (dTA/10)*1.4*(gal/10000); }
     function lbsStabilizerForCYA(dCYA, gal){ if(dCYA<=0) return 0; return (dCYA/10)*0.8125*(gal/10000); }
-    function galLCForFC(dFC, gal, pct=12.5){ if(dFC<=0) return 0; return (dFC/10)*(gal/10000)*(10/pct); }
-    function lbsDichlorForFC(dFC, gal, pct=56){
-      if(dFC<=0) return {lbs:0,cyaGain:0};
-      const fcPerLb10k=6.6*(pct/56);
-      const lbs=(dFC/fcPerLb10k)*(gal/10000);
-      const cyaPerLb10k=6.0*(pct/56);
-      const cyaGain=(lbs*cyaPerLb10k)*(10000/gal);
-      return {lbs,cyaGain};
-    }
     function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt*gal*0.00006; }
     function containersNeeded(amount,size){ if(!size||size<=0) return {units:0,usePct:0}; const u=Math.ceil(amount/size); const p=amount/(u*size)*100; return {units:u,usePct:Math.min(100,Math.round(p))}; }
 
@@ -123,34 +127,36 @@
         const V=parseNum(profile.volume), FC=parseNum(test.FC), pH=parseNum(test.pH), TA=parseNum(test.TA), CYA=parseNum(test.CYA), Salt=parseNum(test.Salt);
         const steps=[], notes=[];
 
-        // 1) pH adjustments
-        const pHTargetLow = 7.2;   // raise to at least 7.2 if low
-        const pHTargetHigh = 7.5;  // lower to ~7.5 if high
+        // pH target
+        const pHTarget = 7.5;
 
-        if(pH>0 && pH<pHTargetLow){
-          const d = clamp(pHTargetLow - pH, 0, 1.0);
+        if(pH>0 && pH<pHTarget){
+          const d = clamp(pHTarget - pH, 0, 1.5);
           const lbs = lbsSodaAshForDeltaPH(d, V);
           if(lbs>0){
             const prod=pickProduct(products,'sodaAsh');
             const size=(prod && prod.unit==='lb'?prod.size:lbs+1);
             const cont=containersNeeded(lbs,size);
-            steps.push({title:`Raise pH to ${pHTargetLow}`,details:`${round2(lbs)} lb soda ash (sodium carbonate)`,prod:prod,units:cont.units,usePct:cont.usePct});
+            steps.push({title:`Raise pH to ${pHTarget}`,details:`${round2(lbs)} lb soda ash (sodium carbonate)`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('Broadcast soda ash slowly across the deep end with pump running. Retest pH in 30–60 minutes.');
+            if(lbs>5){
+              notes.push('Never add more than 5 lb of soda ash at a time. Split larger doses into smaller additions over ~24 hours with the pump running.');
+            }
           }
         }
-        if(pH>0 && pH>pHTargetHigh){
-          const d=clamp(pH-pHTargetHigh,0,1.2);
+        if(pH>0 && pH>pHTarget){
+          const d=clamp(pH-pHTarget,0,1.2);
           const fl=acidFlOzForDeltaPH(d,V,TA);
           if(fl>0){
             const prod=pickProduct(products,'acid');
             const sizeFl=(prod && prod.unit==='gal'?128:(prod && prod.unit==='qt'?32:fl+1));
             const cont=containersNeeded(fl,sizeFl);
-            steps.push({title:`Lower pH to ${pHTargetHigh}`,details:`${round2(fl)} fl oz 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
+            steps.push({title:`Lower pH to ${pHTarget}`,details:`${round2(fl)} fl oz 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('With pump running, pour acid slowly in front of a return. Retest pH in 30–60 minutes.');
           }
         }
 
-        // 2) CYA up if needed (unchanged)
+        // CYA raise if needed
         const cyaTarget=profile.sanitizer==='swg'?70:40;
         if(CYA>0 && CYA<cyaTarget-5){
           const d=cyaTarget-CYA;
@@ -164,35 +170,35 @@
           }
         }
 
-        // 3) FC to target (show BOTH options)
+        // FC to target — show BOTH options using Harmony rules
         const fcTarget = targetFC(profile.sanitizer);
         if(FC>=0 && FC<fcTarget){
           const delta = fcTarget - FC;
 
-          // Option A: Dichlor
+          // Dichlor
           const hasD=products.some(p=>p.type==='dichlor');
           if(hasD){
             const prod=pickProduct(products,'dichlor');
-            const r=lbsDichlorForFC(delta,V,(prod && prod.pct)||56);
+            const r=lbsDichlorForFC(delta,V);
             const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1);
             const cont=containersNeeded(r.lbs,size);
             steps.push({title:`Raise FC to ${fcTarget} ppm (Dichlor)`,details:`${round2(r.lbs)} lb dichlor (adds ~${round2(r.cyaGain)} ppm CYA)`,prod:prod,units:cont.units,usePct:cont.usePct});
           }
 
-          // Option B: Liquid Chlorine
+          // Liquid chlorine
           const hasLC=products.some(p=>p.type==='liquidChlorine');
           if(hasLC){
             const prod=pickProduct(products,'liquidChlorine');
-            const gal=galLCForFC(delta,V,(prod && prod.pct)||12.5);
+            const gal=galLCForFC(delta,V);
             const size=(prod && prod.unit==='gal'?prod.size:gal+1);
             const cont=containersNeeded(gal,size);
-            steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`${round2(gal)} gal ${((prod && prod.pct)||12.5)}% liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
+            steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`${round2(gal)} gal liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
           }
 
           notes.push('Add chlorine slowly in front of a return with pump running. Keep swimmers out for ~30 minutes.');
         }
 
-        // 4) TA up if low (unchanged)
+        // TA up if low
         const taTarget=profile.sanitizer==='swg'?70:80;
         if(TA>0 && TA<taTarget-5){
           const lbs=lbsBicarbForTA(taTarget-TA,V);
@@ -203,7 +209,7 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // 5) Salt for SWG (unchanged)
+        // Salt for SWG
         if(profile.sanitizer==='swg' && Salt>0){
           const target=3200;
           if(Salt<target-100){
