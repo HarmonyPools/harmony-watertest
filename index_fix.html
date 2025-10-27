@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Harmony Pools — Water Test</title>
+  <style>
+    :root{ --sky:#0ea5e9; --text:#0f172a; --muted:#64748b; --bg:#f1f5f9; }
+    #hp-watertest *{ box-sizing:border-box; font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif; }
+    body{ margin:0; background:linear-gradient(#f0f9ff,#fff); color:var(--text); }
+    #hp-watertest{ padding:16px; }
+    .hp-container{ max-width:1100px; margin:0 auto; }
+    .hp-row{ display:grid; grid-template-columns:1fr; gap:16px; }
+    @media(min-width:900px){ .hp-row{ grid-template-columns:1fr 1fr; } }
+    .hp-card{ background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .hp-h1{ font-size:28px; font-weight:600; margin:0 0 12px; }
+    .hp-h2{ font-size:18px; font-weight:600; margin:0 0 8px; }
+    .hp-label{ font-size:13px; color:#334155; display:block; margin-bottom:6px; }
+    .hp-input,.hp-select{ width:100%; border:1px solid #cbd5e1; border-radius:12px; padding:10px 12px; font-size:14px; }
+    .hp-tip{ font-size:12px; color:#64748b; margin-top:6px; }
+    .hp-btn{ background:var(--sky); color:#fff; border:0; border-radius:12px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    .hp-btn:hover{ filter:brightness(.95); }
+    .hp-ghost{ background:#fff; color:#0f172a; border:1px solid #cbd5e1; }
+    .hp-table{ width:100%; border-collapse:collapse; font-size:14px; }
+    .hp-table th{ text-align:left; color:#64748b; font-weight:600; }
+    .hp-table td,.hp-table th{ padding:6px 8px; border-top:1px solid #f1f5f9; }
+    .hp-chip{ display:inline-flex; align-items:center; background:#f1f5f9; color:#0f172a; border-radius:999px; padding:2px 8px; font-size:12px; }
+    .hp-note{ font-size:12px; color:#64748b; }
+  </style>
+</head>
+<body>
+  <div id="hp-watertest"></div>
+
+  <!-- React + Babel (explicit versions & presets) -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useEffect } = React;
+
+    function round2(n){ return Math.round(n*100)/100; }
+    function clamp(n,min,max){ return Math.max(min, Math.min(max,n)); }
+
+    function targetFC(cya, sanitizer){
+      if (sanitizer==='swg') return 5;
+      if (cya<=20) return 3; if (cya<=40) return 5; if (cya<=60) return 7.5; if (cya<=80) return 5.5; return 5;
+    }
+    function acidFlOzForDeltaPH(delta, gal, TA){
+      if (delta<=0) return 0; const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32};
+      const keys=Object.keys(t).map(parseFloat).sort((a,b)=>a-b);
+      let need=t[keys[keys.length-1]]; for(let i=0;i<keys.length;i++){ if(delta===keys[i]){need=t[keys[i]];break;} if(delta<keys[i]){const k1=keys[i-1]||0,k2=keys[i],v1=k1?t[k1]:0,v2=t[k2];const a=(delta-k1)/(k2-k1);need=v1+a*(v2-v1);break;} }
+      let fl=need*(gal/10000); if(TA&&TA>120) fl*=.85; if(TA&&TA<60) fl*=1.15; return fl;
+    }
+    function lbsBicarbForTA(dTA, gal){ if(dTA<=0) return 0; return (dTA/10)*1.4*(gal/10000); }
+    function lbsStabilizerForCYA(dCYA, gal){ if(dCYA<=0) return 0; return (dCYA/10)*0.8125*(gal/10000); }
+    function galLCForFC(dFC, gal, pct=12.5){ if(dFC<=0) return 0; return (dFC/10)*(gal/10000)*(10/pct); }
+    function lbsDichlorForFC(dFC, gal, pct=56){ if(dFC<=0) return {lbs:0,cyaGain:0}; const fcPerLb10k=6.6*(pct/56); const lbs=(dFC/fcPerLb10k)*(gal/10000); const cyaPerLb10k=6.0*(pct/56); const cyaGain=(lbs*cyaPerLb10k)*(10000/gal); return {lbs,cyaGain}; }
+    function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt*gal*0.00006; }
+    function containersNeeded(amount,size){ if(!size||size<=0) return {units:0,usePct:0}; const u=Math.ceil(amount/size); const p=amount/(u*size)*100; return {units:u,usePct:Math.min(100,Math.round(p))}; }
+
+    var DEFAULT_PRODUCTS=[
+      { name:'Muriatic Acid gallon', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:undefined },
+      { name:'Muriatic Acid case', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:4 },
+      { name:'Liquid Chlorine case', type:'liquidChlorine', size:1, unit:'gal', pct:12.5, url:'', pack:4 },
+      { name:'Soda Ash 10 lb', type:'sodaAsh', size:10, unit:'lb', url:'' },
+      { name:'Bicarbonate 10 lb', type:'bicarb', size:10, unit:'lb', url:'' },
+      { name:'Stabilizer 4 lb', type:'stabilizer', size:4, unit:'lb', url:'' },
+      { name:'Pool Salt 40 lb', type:'salt', size:40, unit:'lb', url:'' },
+      { name:'Dichlor 25 lb', type:'dichlor', size:25, unit:'lb', pct:56, url:'' },
+      { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
+    ];
+
+    function pickProduct(products, type){
+      var opts=products.filter(function(p){return p.type===type;});
+      if(!opts.length) return undefined;
+      if(type==='liquidChlorine'){ var c=opts.find(function(o){return o.pack&&o.pack>1;}); return c||opts[0]; }
+      var single=opts.find(function(o){return !o.pack;}); return single||opts[0];
+    }
+
+    function App(){
+      const [profile,setProfile]=useState(()=>{ try{return JSON.parse(localStorage.getItem('hp_profile'))||{name:'Main Pool',volume:20000,sanitizer:'swg',surface:'vinyl'};}catch(e){return {name:'Main Pool',volume:20000,sanitizer:'swg',surface:'vinyl'};}});
+      const [products,setProducts]=useState(()=>{ try{return JSON.parse(localStorage.getItem('hp_products'))||DEFAULT_PRODUCTS;}catch(e){return DEFAULT_PRODUCTS;}});
+      const [test,setTest]=useState({FC:'',CC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''});
+      const [plan,setPlan]=useState(null);
+      const [shopping,setShopping]=useState([]);
+
+      useEffect(()=>{ localStorage.setItem('hp_profile',JSON.stringify(profile)); },[profile]);
+      useEffect(()=>{ localStorage.setItem('hp_products',JSON.stringify(products)); },[products]);
+
+      function parseNum(v){ const n=parseFloat(String(v).replace(/,/g,'')); return isFinite(n)?n:0; }
+
+      function generate(){
+        const V=parseNum(profile.volume), FC=parseNum(test.FC), pH=parseNum(test.pH), TA=parseNum(test.TA), CYA=parseNum(test.CYA), Salt=parseNum(test.Salt);
+        const steps=[], notes=[];
+        const pHTarget=7.5; if(pH>0 && pH>pHTarget){ const d=clamp(pH-pHTarget,0,1.2); const fl=acidFlOzForDeltaPH(d,V,TA); if(fl>0){ const prod=pickProduct(products,'acid'); const sizeFl=(prod && prod.unit==='gal'?128:(prod && prod.unit==='qt'?32:fl+1)); const cont=containersNeeded(fl,sizeFl); steps.push({title:'Lower pH to '+pHTarget,details:round2(fl)+' fl oz 31.45% muriatic acid',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('With pump running, pour slowly in front of a return. Retest pH in 30–60 minutes.'); } }
+        const cyaTarget=profile.sanitizer==='swg'?70:40; if(CYA>0 && CYA<cyaTarget-5){ const d=cyaTarget-CYA; const lbs=lbsStabilizerForCYA(d,V); if(lbs>0){ const prod=pickProduct(products,'stabilizer'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise CYA to '+cyaTarget+' ppm',details:round2(lbs)+' lb stabilizer',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Place in a sock in the skimmer or hang in front of a return; allow 24–48h to dissolve.'); } }
+        const fcTarget=targetFC(CYA||0,profile.sanitizer); if(FC>=0 && FC<fcTarget){ const hasD=products.some(function(p){return p.type==='dichlor';}); const useD=hasD && (CYA||0)<=60; if(useD){ const prod=pickProduct(products,'dichlor'); const r=lbsDichlorForFC(fcTarget-FC,V,(prod && prod.pct)||56); const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1); const cont=containersNeeded(r.lbs,size); steps.push({title:'Raise FC to '+fcTarget+' ppm (Dichlor)',details:round2(r.lbs)+' lb dichlor (adds ~'+round2(r.cyaGain)+' ppm CYA)',prod:prod,units:cont.units,usePct:cont.usePct}); if(r.cyaGain>0) notes.push('Dichlor adds stabilizer (CYA). Monitor CYA and switch to liquid chlorine once CYA is in range.'); } else { const prod=pickProduct(products,'liquidChlorine'); const gal=galLCForFC(fcTarget-FC,V,(prod && prod.pct)||12.5); const size=(prod && prod.unit==='gal'?prod.size:gal+1); const cont=containersNeeded(gal,size); steps.push({title:'Raise FC to '+fcTarget+' ppm',details:round2(gal)+' gal '+((prod && prod.pct)||12.5)+'% liquid chlorine',prod:prod,units:cont.units,usePct:cont.usePct}); } notes.push('Add slowly in front of a return with pump running. Keep swimmers out for ~30 minutes.'); }
+        const taTarget=profile.sanitizer==='swg'?70:80; if(TA>0 && TA<taTarget-5){ const lbs=lbsBicarbForTA(taTarget-TA,V); const prod=pickProduct(products,'bicarb'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise TA to '+taTarget+' ppm',details:round2(lbs)+' lb sodium bicarbonate',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.'); }
+        if(profile.sanitizer==='swg' && Salt>0){ const target=3200; if(Salt<target-100){ const lbs=lbsSaltForDelta(target-Salt,V); const prod=pickProduct(products,'salt'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise Salt to '+target+' ppm',details:round2(lbs)+' lb pool salt',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Add bags slowly to the deep end, brush to help dissolve. Wait 24h before re-checking cell.'); } }
+        const shop=steps.map(function(s){
+          return {
+            name:(s.prod && s.prod.name)?s.prod.name:s.title,
+            containers:s.units||1,
+            size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
+            url:(s.prod && s.prod.url)?s.prod.url:'',
+            note: s.details+' (~'+(s.usePct||100)+'% of last container)'
+          };
+        });
+        setPlan({steps:steps,notes:notes}); setShopping(shop);
+        const hist=JSON.parse(localStorage.getItem('hp_tests')||'[]'); hist.unshift({at:new Date().toISOString(),profile:profile,test:test}); while(hist.length>10) hist.pop(); localStorage.setItem('hp_tests',JSON.stringify(hist));
+      }
+
+      function importCSV(e){
+        const f=e.target.files && e.target.files[0]; if(!f) return; const r=new FileReader();
+        r.onload=function(){ const text=String(r.result); const lines=text.split(/\r?\n/).filter(Boolean); const header=lines.shift(); if(!header) return alert('Empty CSV'); const cols=header.split(',').map(function(s){return s.trim();}); const idx={ name:cols.findIndex(function(c){return /product name/i.test(c);}), type:cols.findIndex(function(c){return /dose type/i.test(c);}), size:cols.findIndex(function(c){return /size amount/i.test(c);}), unit:cols.findIndex(function(c){return /size unit/i.test(c);}), pct:cols.findIndex(function(c){return /strength/i.test(c);}), url:cols.findIndex(function(c){return /url/i.test(c);}), notes:cols.findIndex(function(c){return /notes/i.test(c);}), pack:cols.findIndex(function(c){return /pack qty/i.test(c);}) }; const out=[]; for(var i=0;i<lines.length;i++){ const cells=lines[i].split(','); if(cells.length<4) continue; const p={ name:cells[idx.name]?cells[idx.name].trim():'', type:cells[idx.type]?cells[idx.type].trim():'', size:parseFloat(cells[idx.size]||'0'), unit:(cells[idx.unit]||'').trim(), pct:cells[idx.pct]?parseFloat(cells[idx.pct]):undefined, url:(cells[idx.url]||'').trim(), notes:(cells[idx.notes]||'').trim()||undefined, pack:cells[idx.pack]?parseInt(cells[idx.pack]):undefined }; if(p.name && p.type && p.size && p.unit) out.push(p); } if(out.length) setProducts(out); else alert('No valid rows found.'); };
+        r.readAsText(f);
+      }
+
+      return (
+        <div className="hp-container">
+          <div className="hp-row" style={{marginBottom:16}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <h1 className="hp-h1">Harmony Pools — Water Test</h1>
+              <button className="hp-ghost hp-btn" onClick={()=>alert('Tap your browser menu → Add to Home Screen')}>Install</button>
+            </div>
+          </div>
+
+          <div className="hp-row">
+            <div className="hp-card">
+              <h2 className="hp-h2">Pool</h2>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <label className="hp-label">Name</label>
+                  <input className="hp-input" value={profile.name} onChange={e=>setProfile({...profile,name:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">Volume (gallons)</label>
+                  <input className="hp-input" type="number" min="1000" step="100" value={profile.volume} onChange={e=>setProfile({...profile,volume:e.target.value})} />
+                  <div className="hp-tip">L×W×Avg depth × 7.5</div>
+                </div>
+                <div>
+                  <label className="hp-label">Sanitizer</label>
+                  <select className="hp-select" value={profile.sanitizer} onChange={e=>setProfile({...profile,sanitizer:e.target.value})}>
+                    <option value="chlorine">Chlorine</option>
+                    <option value="swg">Salt Water Generator</option>
+                    <option value="bromine">Bromine</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="hp-label">Surface</label>
+                  <select className="hp-select" value={profile.surface} onChange={e=>setProfile({...profile,surface:e.target.value})}>
+                    <option value="vinyl">Vinyl</option>
+                    <option value="plaster">Plaster</option>
+                    <option value="fiberglass">Fiberglass</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="hp-card">
+              <h2 className="hp-h2">Products</h2>
+              <div style={{display:'flex',alignItems:'center',gap:12}}>
+                <input type="file" accept=".csv" onChange={importCSV} />
+                <button className="hp-ghost hp-btn" onClick={()=>setProducts(DEFAULT_PRODUCTS)}>Reset to defaults</button>
+              </div>
+              <div style={{maxHeight:170,overflow:'auto',marginTop:8}}>
+                <table className="hp-table">
+                  <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>% / URL</th></tr></thead>
+                  <tbody>
+                    {products.map((p,i)=> (
+                      <tr key={i}><td>{p.name}</td><td>{p.type}{p.pack?` (x${p.pack})`:''}</td><td>{p.size} {p.unit}</td><td>{p.pct?`${p.pct}%`:''} {p.url? ' • link' : ''}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="hp-row" style={{marginTop:16}}>
+            <div className="hp-card">
+              <h2 className="hp-h2">Enter Readings</h2>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
+                {['FC','CC','pH','TA','CYA','Salt'].map(key=> (
+                  <div key={key}>
+                    <label className="hp-label">{key}</label>
+                    <input className="hp-input" type="number" step="any" value={test[key]} onChange={e=>setTest({...test,[key]:e.target.value})} />
+                  </div>
+                ))}
+              </div>
+              <div style={{marginTop:12,display:'flex',gap:8}}>
+                <button className="hp-btn" onClick={generate}>Generate Plan</button>
+                <button className="hp-ghost hp-btn" onClick={()=>{ setTest({FC:'',CC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''}); setPlan(null); setShopping([]); }}>Clear</button>
+              </div>
+            </div>
+
+            <div className="hp-card">
+              <h2 className="hp-h2">Treatment Plan</h2>
+              {!plan && (<div className="hp-note">Enter readings and tap Generate.</div>)}
+              {plan && (
+                <div>
+                  <ol style={{margin:'0 0 0 18px'}}>
+                    {plan.steps.map((s,idx)=> (
+                      <li key={idx} style={{marginBottom:10}}>
+                        <div style={{fontWeight:600}}>{s.title}</div>
+                        <div className="hp-note">{s.details}</div>
+                        {s.prod && (
+                          <div className="hp-note" style={{marginTop:4,display:'flex',gap:8,alignItems:'center'}}>
+                            <span className="hp-chip">{s.prod.name}</span>
+                            {s.prod.url ? <a href={s.prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
+                            <span>Containers: {s.units} (~{s.usePct}% last one)</span>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="hp-note" style={{marginTop:6}}>
+                    {plan.notes.map((n,i)=>(<div key={i}>• {n}</div>))}
+                    <div>Safety: Wear PPE. Add chemicals separately with pump running. Never mix.</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="hp-row" style={{marginTop:16}}>
+            <div className="hp-card">
+              <h2 className="hp-h2">Shopping List</h2>
+              {shopping.length===0 && (<div className="hp-note">Generate a plan to build your list.</div>)}
+              {shopping.length>0 && (
+                <div style={{overflow:'auto'}}>
+                  <table className="hp-table">
+                    <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
+                    <tbody>
+                      {shopping.map((it,i)=> (
+                        <tr key={i}><td>{it.name}</td><td>{it.containers}</td><td>{it.size}</td><td>{it.note}</td><td>{it.url? <a href={it.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="hp-note" style={{marginTop:18}}>Preview only — formulas are approximations. Retest after each step. CYA and salt may take 24–48h to reflect.</div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('hp-watertest'));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
