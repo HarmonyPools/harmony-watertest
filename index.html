@@ -31,11 +31,14 @@
 <body>
   <div id="hp-watertest"></div>
 
-  <!-- React + Babel (explicit versions & presets) -->
+  <!-- React + ReactDOM -->
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
 
+  <!-- Babel compiler (newer package name) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- App -->
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect } = React;
 
@@ -49,13 +52,25 @@
     function acidFlOzForDeltaPH(delta, gal, TA){
       if (delta<=0) return 0; const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32};
       const keys=Object.keys(t).map(parseFloat).sort((a,b)=>a-b);
-      let need=t[keys[keys.length-1]]; for(let i=0;i<keys.length;i++){ if(delta===keys[i]){need=t[keys[i]];break;} if(delta<keys[i]){const k1=keys[i-1]||0,k2=keys[i],v1=k1?t[k1]:0,v2=t[k2];const a=(delta-k1)/(k2-k1);need=v1+a*(v2-v1);break;} }
+      let need=t[keys[keys.length-1]];
+      for(let i=0;i<keys.length;i++){
+        if(delta===keys[i]){need=t[keys[i]];break;}
+        if(delta<keys[i]){
+          const k1=keys[i-1]||0,k2=keys[i],v1=k1?t[k1]:0,v2=t[k2];
+          const a=(delta-k1)/(k2-k1); need=v1+a*(v2-v1); break;
+        }
+      }
       let fl=need*(gal/10000); if(TA&&TA>120) fl*=.85; if(TA&&TA<60) fl*=1.15; return fl;
     }
     function lbsBicarbForTA(dTA, gal){ if(dTA<=0) return 0; return (dTA/10)*1.4*(gal/10000); }
     function lbsStabilizerForCYA(dCYA, gal){ if(dCYA<=0) return 0; return (dCYA/10)*0.8125*(gal/10000); }
     function galLCForFC(dFC, gal, pct=12.5){ if(dFC<=0) return 0; return (dFC/10)*(gal/10000)*(10/pct); }
-    function lbsDichlorForFC(dFC, gal, pct=56){ if(dFC<=0) return {lbs:0,cyaGain:0}; const fcPerLb10k=6.6*(pct/56); const lbs=(dFC/fcPerLb10k)*(gal/10000); const cyaPerLb10k=6.0*(pct/56); const cyaGain=(lbs*cyaPerLb10k)*(10000/gal); return {lbs,cyaGain}; }
+    function lbsDichlorForFC(dFC, gal, pct=56){
+      if(dFC<=0) return {lbs:0,cyaGain:0};
+      const fcPerLb10k=6.6*(pct/56); const lbs=(dFC/fcPerLb10k)*(gal/10000);
+      const cyaPerLb10k=6.0*(pct/56); const cyaGain=(lbs*cyaPerLb10k)*(10000/gal);
+      return {lbs,cyaGain};
+    }
     function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt*gal*0.00006; }
     function containersNeeded(amount,size){ if(!size||size<=0) return {units:0,usePct:0}; const u=Math.ceil(amount/size); const p=amount/(u*size)*100; return {units:u,usePct:Math.min(100,Math.round(p))}; }
 
@@ -93,11 +108,49 @@
       function generate(){
         const V=parseNum(profile.volume), FC=parseNum(test.FC), pH=parseNum(test.pH), TA=parseNum(test.TA), CYA=parseNum(test.CYA), Salt=parseNum(test.Salt);
         const steps=[], notes=[];
-        const pHTarget=7.5; if(pH>0 && pH>pHTarget){ const d=clamp(pH-pHTarget,0,1.2); const fl=acidFlOzForDeltaPH(d,V,TA); if(fl>0){ const prod=pickProduct(products,'acid'); const sizeFl=(prod && prod.unit==='gal'?128:(prod && prod.unit==='qt'?32:fl+1)); const cont=containersNeeded(fl,sizeFl); steps.push({title:'Lower pH to '+pHTarget,details:round2(fl)+' fl oz 31.45% muriatic acid',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('With pump running, pour slowly in front of a return. Retest pH in 30–60 minutes.'); } }
-        const cyaTarget=profile.sanitizer==='swg'?70:40; if(CYA>0 && CYA<cyaTarget-5){ const d=cyaTarget-CYA; const lbs=lbsStabilizerForCYA(d,V); if(lbs>0){ const prod=pickProduct(products,'stabilizer'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise CYA to '+cyaTarget+' ppm',details:round2(lbs)+' lb stabilizer',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Place in a sock in the skimmer or hang in front of a return; allow 24–48h to dissolve.'); } }
-        const fcTarget=targetFC(CYA||0,profile.sanitizer); if(FC>=0 && FC<fcTarget){ const hasD=products.some(function(p){return p.type==='dichlor';}); const useD=hasD && (CYA||0)<=60; if(useD){ const prod=pickProduct(products,'dichlor'); const r=lbsDichlorForFC(fcTarget-FC,V,(prod && prod.pct)||56); const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1); const cont=containersNeeded(r.lbs,size); steps.push({title:'Raise FC to '+fcTarget+' ppm (Dichlor)',details:round2(r.lbs)+' lb dichlor (adds ~'+round2(r.cyaGain)+' ppm CYA)',prod:prod,units:cont.units,usePct:cont.usePct}); if(r.cyaGain>0) notes.push('Dichlor adds stabilizer (CYA). Monitor CYA and switch to liquid chlorine once CYA is in range.'); } else { const prod=pickProduct(products,'liquidChlorine'); const gal=galLCForFC(fcTarget-FC,V,(prod && prod.pct)||12.5); const size=(prod && prod.unit==='gal'?prod.size:gal+1); const cont=containersNeeded(gal,size); steps.push({title:'Raise FC to '+fcTarget+' ppm',details:round2(gal)+' gal '+((prod && prod.pct)||12.5)+'% liquid chlorine',prod:prod,units:cont.units,usePct:cont.usePct}); } notes.push('Add slowly in front of a return with pump running. Keep swimmers out for ~30 minutes.'); }
-        const taTarget=profile.sanitizer==='swg'?70:80; if(TA>0 && TA<taTarget-5){ const lbs=lbsBicarbForTA(taTarget-TA,V); const prod=pickProduct(products,'bicarb'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise TA to '+taTarget+' ppm',details:round2(lbs)+' lb sodium bicarbonate',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.'); }
-        if(profile.sanitizer==='swg' && Salt>0){ const target=3200; if(Salt<target-100){ const lbs=lbsSaltForDelta(target-Salt,V); const prod=pickProduct(products,'salt'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size); steps.push({title:'Raise Salt to '+target+' ppm',details:round2(lbs)+' lb pool salt',prod:prod,units:cont.units,usePct:cont.usePct}); notes.push('Add bags slowly to the deep end, brush to help dissolve. Wait 24h before re-checking cell.'); } }
+        const pHTarget=7.5;
+        if(pH>0 && pH>pHTarget){
+          const d=clamp(pH-pHTarget,0,1.2); const fl=acidFlOzForDeltaPH(d,V,TA);
+          if(fl>0){ const prod=pickProduct(products,'acid'); const sizeFl=(prod && prod.unit==='gal'?128:(prod && prod.unit==='qt'?32:fl+1)); const cont=containersNeeded(fl,sizeFl);
+            steps.push({title:'Lower pH to '+pHTarget,details:round2(fl)+' fl oz 31.45% muriatic acid',prod:prod,units:cont.units,usePct:cont.usePct});
+            notes.push('With pump running, pour slowly in front of a return. Retest pH in 30–60 minutes.');
+          }
+        }
+        const cyaTarget=profile.sanitizer==='swg'?70:40;
+        if(CYA>0 && CYA<cyaTarget-5){
+          const d=cyaTarget-CYA; const lbs=lbsStabilizerForCYA(d,V);
+          if(lbs>0){ const prod=pickProduct(products,'stabilizer'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size);
+            steps.push({title:'Raise CYA to '+cyaTarget+' ppm',details:round2(lbs)+' lb stabilizer',prod:prod,units:cont.units,usePct:cont.usePct});
+            notes.push('Place in a sock in the skimmer or hang in front of a return; allow 24–48h to dissolve.');
+          }
+        }
+        const fcTarget=targetFC(CYA||0,profile.sanitizer);
+        if(FC>=0 && FC<fcTarget){
+          const hasD=products.some(function(p){return p.type==='dichlor';}); const useD=hasD && (CYA||0)<=60;
+          if(useD){
+            const prod=pickProduct(products,'dichlor'); const r=lbsDichlorForFC(fcTarget-FC,V,(prod && prod.pct)||56); const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1); const cont=containersNeeded(r.lbs,size);
+            steps.push({title:'Raise FC to '+fcTarget+' ppm (Dichlor)',details:round2(r.lbs)+' lb dichlor (adds ~'+round2(r.cyaGain)+' ppm CYA)',prod:prod,units:cont.units,usePct:cont.usePct});
+            if(r.cyaGain>0) notes.push('Dichlor adds stabilizer (CYA). Monitor CYA and switch to liquid chlorine once CYA is in range.');
+          } else {
+            const prod=pickProduct(products,'liquidChlorine'); const gal=galLCForFC(fcTarget-FC,V,(prod && prod.pct)||12.5); const size=(prod && prod.unit==='gal'?prod.size:gal+1); const cont=containersNeeded(gal,size);
+            steps.push({title:'Raise FC to '+fcTarget+' ppm',details:round2(gal)+' gal '+((prod && prod.pct)||12.5)+'% liquid chlorine',prod:prod,units:cont.units,usePct:cont.usePct});
+          }
+          notes.push('Add slowly in front of a return with pump running. Keep swimmers out for ~30 minutes.');
+        }
+        const taTarget=profile.sanitizer==='swg'?70:80;
+        if(TA>0 && TA<taTarget-5){
+          const lbs=lbsBicarbForTA(taTarget-TA,V); const prod=pickProduct(products,'bicarb'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size);
+          steps.push({title:'Raise TA to '+taTarget+' ppm',details:round2(lbs)+' lb sodium bicarbonate',prod:prod,units:cont.units,usePct:cont.usePct});
+          notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
+        }
+        if(profile.sanitizer==='swg' && Salt>0){
+          const target=3200;
+          if(Salt<target-100){
+            const lbs=lbsSaltForDelta(target-Salt,V); const prod=pickProduct(products,'salt'); const size=(prod && prod.unit==='lb'?prod.size:lbs+1); const cont=containersNeeded(lbs,size);
+            steps.push({title:'Raise Salt to '+target+' ppm',details:round2(lbs)+' lb pool salt',prod:prod,units:cont.units,usePct:cont.usePct});
+            notes.push('Add bags slowly to the deep end, brush to help dissolve. Wait 24h before re-checking cell.');
+          }
+        }
         const shop=steps.map(function(s){
           return {
             name:(s.prod && s.prod.name)?s.prod.name:s.title,
@@ -113,7 +166,19 @@
 
       function importCSV(e){
         const f=e.target.files && e.target.files[0]; if(!f) return; const r=new FileReader();
-        r.onload=function(){ const text=String(r.result); const lines=text.split(/\r?\n/).filter(Boolean); const header=lines.shift(); if(!header) return alert('Empty CSV'); const cols=header.split(',').map(function(s){return s.trim();}); const idx={ name:cols.findIndex(function(c){return /product name/i.test(c);}), type:cols.findIndex(function(c){return /dose type/i.test(c);}), size:cols.findIndex(function(c){return /size amount/i.test(c);}), unit:cols.findIndex(function(c){return /size unit/i.test(c);}), pct:cols.findIndex(function(c){return /strength/i.test(c);}), url:cols.findIndex(function(c){return /url/i.test(c);}), notes:cols.findIndex(function(c){return /notes/i.test(c);}), pack:cols.findIndex(function(c){return /pack qty/i.test(c);}) }; const out=[]; for(var i=0;i<lines.length;i++){ const cells=lines[i].split(','); if(cells.length<4) continue; const p={ name:cells[idx.name]?cells[idx.name].trim():'', type:cells[idx.type]?cells[idx.type].trim():'', size:parseFloat(cells[idx.size]||'0'), unit:(cells[idx.unit]||'').trim(), pct:cells[idx.pct]?parseFloat(cells[idx.pct]):undefined, url:(cells[idx.url]||'').trim(), notes:(cells[idx.notes]||'').trim()||undefined, pack:cells[idx.pack]?parseInt(cells[idx.pack]):undefined }; if(p.name && p.type && p.size && p.unit) out.push(p); } if(out.length) setProducts(out); else alert('No valid rows found.'); };
+        r.onload=function(){
+          const text=String(r.result); const lines=text.split(/\r?\n/).filter(Boolean); const header=lines.shift(); if(!header) return alert('Empty CSV');
+          const cols=header.split(',').map(function(s){return s.trim();});
+          const idx={ name:cols.findIndex(function(c){return /product name/i.test(c);}), type:cols.findIndex(function(c){return /dose type/i.test(c);}), size:cols.findIndex(function(c){return /size amount/i.test(c);}), unit:cols.findIndex(function(c){return /size unit/i.test(c);}), pct:cols.findIndex(function(c){return /strength/i.test(c);}), url:cols.findIndex(function(c){return /url/i.test(c);}), notes:cols.findIndex(function(c){return /notes/i.test(c);}), pack:cols.findIndex(function(c){return /pack qty/i.test(c);}) };
+          const out=[];
+          for(var i=0;i<lines.length;i++){
+            const cells=lines[i].split(',');
+            if(cells.length<4) continue;
+            const p={ name:cells[idx.name]?cells[idx.name].trim():'', type:cells[idx.type]?cells[idx.type].trim():'', size:parseFloat(cells[idx.size]||'0'), unit:(cells[idx.unit]||'').trim(), pct:cells[idx.pct]?parseFloat(cells[idx.pct]):undefined, url:(cells[idx.url]||'').trim(), notes:(cells[idx.notes]||'').trim()||undefined, pack:cells[idx.pack]?parseInt(cells[idx.pack]):undefined };
+            if(p.name && p.type && p.size && p.unit) out.push(p);
+          }
+          if(out.length) setProducts(out); else alert('No valid rows found.');
+        };
         r.readAsText(f);
       }
 
