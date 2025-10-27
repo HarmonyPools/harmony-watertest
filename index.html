@@ -42,11 +42,13 @@
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect } = React;
 
-    function round2(n){ return Math.round(n*100)/100; }
-    function clamp(n,min,max){ return Math.max(min, Math.min(max,n)); }
+    // ---------- helpers ----------
+    const round2=(n)=>Math.round(n*100)/100;
+    const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+    const roundQuarterGal=(gal)=> Math.max(0.25, Math.round(gal*4)/4); // nearest 1/4 gal, floor at 1/4 if nonzero
 
     // Harmony Pools policy
-    function targetFC(sanitizer){ return sanitizer==='swg' ? 5 : 3; } // SWG 5 ppm, others 3 ppm
+    const targetFC = (sanitizer)=> sanitizer==='swg' ? 5 : 3; // SWG 5 ppm, others 3 ppm
 
     // Lower pH with acid (approx table, fl oz 31.45% per 10k per ΔpH)
     function acidFlOzForDeltaPH(delta, gal, TA){
@@ -63,7 +65,7 @@
       }
       let fl=need*(gal/10000);
       if(TA&&TA>120) fl*=.85; if(TA&&TA<60) fl*=1.15;
-      return fl;
+      return fl; // fl oz of 31.45%
     }
 
     // Raise pH with soda ash — ~12 oz / 10k raises ≈0.2 pH (field rule)
@@ -74,27 +76,27 @@
       return ounces/16; // lb
     }
 
-    // === Your updated dosing rules ===
-    // Liquid chlorine: 1 gal / 10,000 gal = +3 ppm FC
-    function galLCForFC(dFC, gal){
-      if(dFC<=0) return 0;
-      return (dFC/3) * (gal/10000); // gallons needed
-    }
-
-    // Dichlor 56%: 1 lb / 10,000 gal = +3 ppm FC; CYA gain ≈ +6 ppm per lb / 10k
+    // Your dosing rules: 1 gal (or 1 lb dichlor) per 10k = +3 ppm FC
+    const galLCForFC = (dFC, gal)=> dFC<=0 ? 0 : (dFC/3)*(gal/10000);
     function lbsDichlorForFC(dFC, gal){
       if(dFC<=0) return {lbs:0,cyaGain:0};
-      const lbs = (dFC/3) * (gal/10000); // pounds needed
-      const cyaGain = lbs * 6 * (10000/gal); // ppm added to this pool
+      const lbs=(dFC/3)*(gal/10000);
+      const cyaGain = lbs*6*(10000/gal); // ~+6 ppm CYA per lb per 10k
       return {lbs,cyaGain};
     }
-    // ==================================
 
-    function lbsBicarbForTA(dTA, gal){ if(dTA<=0) return 0; return (dTA/10)*1.4*(gal/10000); }
-    function lbsStabilizerForCYA(dCYA, gal){ if(dCYA<=0) return 0; return (dCYA/10)*0.8125*(gal/10000); }
-    function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt*gal*0.00006; }
-    function containersNeeded(amount,size){ if(!size||size<=0) return {units:0,usePct:0}; const u=Math.ceil(amount/size); const p=amount/(u*size)*100; return {units:u,usePct:Math.min(100,Math.round(p))}; }
+    // Other utilities
+    const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
+    const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
+    const lbsSaltForDelta = (dSalt, gal)=> dSalt<=0 ? 0 : dSalt*gal*0.00006;
+    function containersNeeded(amount,size){
+      if(!size||size<=0) return {units:0,usePct:0};
+      const u=Math.ceil(amount/size);
+      const p=amount/(u*size)*100;
+      return {units:u,usePct:Math.min(100,Math.round(p))};
+    }
 
+    // Default products (you can swap URLs/sizes via CSV)
     var DEFAULT_PRODUCTS=[
       { name:'Muriatic Acid gallon', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:undefined },
       { name:'Muriatic Acid case', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:4 },
@@ -108,10 +110,10 @@
     ];
 
     function pickProduct(products, type){
-      var opts=products.filter(p=>p.type===type);
+      const opts=products.filter(p=>p.type===type);
       if(!opts.length) return undefined;
-      if(type==='liquidChlorine'){ var c=opts.find(o=>o.pack&&o.pack>1); return c||opts[0]; }
-      var single=opts.find(o=>!o.pack); return single||opts[0];
+      if(type==='liquidChlorine'){ const c=opts.find(o=>o.pack&&o.pack>1); return c||opts[0]; }
+      const single=opts.find(o=>!o.pack); return single||opts[0];
     }
 
     function App(){
@@ -124,15 +126,17 @@
       useEffect(()=>{ localStorage.setItem('hp_profile',JSON.stringify(profile)); },[profile]);
       useEffect(()=>{ localStorage.setItem('hp_products',JSON.stringify(products)); },[products]);
 
-      function parseNum(v){ const n=parseFloat(String(v).replace(/,/g,'')); return isFinite(n)?n:0; }
+      const parseNum=(v)=>{ const n=parseFloat(String(v).replace(/,/g,'')); return isFinite(n)?n:0; };
 
       function generate(){
         const V=parseNum(profile.volume), FC=parseNum(test.FC), pH=parseNum(test.pH), TA=parseNum(test.TA), CYA=parseNum(test.CYA), Salt=parseNum(test.Salt);
         const steps=[], notes=[];
+        let usedAcid=false, usedChlorine=false;
 
         // pH target
         const pHTarget = 7.5;
 
+        // Raise pH (soda ash)
         if(pH>0 && pH<pHTarget){
           const d = clamp(pHTarget - pH, 0, 1.5);
           const lbs = lbsSodaAshForDeltaPH(d, V);
@@ -147,15 +151,20 @@
             }
           }
         }
+
+        // Lower pH (acid)
         if(pH>0 && pH>pHTarget){
           const d=clamp(pH-pHTarget,0,1.2);
-          const fl=acidFlOzForDeltaPH(d,V,TA);
+          const fl=acidFlOzForDeltaPH(d,V,TA); // fl oz of 31.45%
           if(fl>0){
             const prod=pickProduct(products,'acid');
-            const sizeFl=(prod && prod.unit==='gal'?128:(prod && prod.unit==='qt'?32:fl+1));
-            const cont=containersNeeded(fl,sizeFl);
-            steps.push({title:`Lower pH to ${pHTarget}`,details:`${round2(fl)} fl oz 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
+            const galRaw=fl/128;
+            const gal=roundQuarterGal(galRaw);
+            const sizeGal=(prod && prod.unit==='gal'?prod.size: (prod && prod.unit==='qt'?0.25:gal));
+            const cont=containersNeeded(gal,sizeGal);
+            steps.push({title:`Lower pH to ${pHTarget}`,details:`about ${round2(gal)} gal 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('With pump running, pour acid slowly in front of a return. Retest pH in 30–60 minutes.');
+            usedAcid=true;
           }
         }
 
@@ -173,32 +182,36 @@
           }
         }
 
-        // FC to target — both options, using Harmony rules
+        // FC to target — both options (except vinyl: liquid-only + warning)
         const fcTarget = targetFC(profile.sanitizer);
         if(FC>=0 && FC<fcTarget){
           const delta = fcTarget - FC;
 
-          // Dichlor
-          const hasD=products.some(p=>p.type==='dichlor');
-          if(hasD){
-            const prod=pickProduct(products,'dichlor');
-            const r=lbsDichlorForFC(delta,V);
-            const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1);
-            const cont=containersNeeded(r.lbs,size);
-            steps.push({title:`Raise FC to ${fcTarget} ppm (Dichlor)`,details:`${round2(r.lbs)} lb dichlor (adds ~${round2(r.cyaGain)} ppm CYA)`,prod:prod,units:cont.units,usePct:cont.usePct});
-          }
-
-          // Liquid chlorine
+          // Liquid chlorine (always shown)
           const hasLC=products.some(p=>p.type==='liquidChlorine');
           if(hasLC){
             const prod=pickProduct(products,'liquidChlorine');
-            const gal=galLCForFC(delta,V);
+            const galRaw=galLCForFC(delta,V);
+            const gal=roundQuarterGal(galRaw);
             const size=(prod && prod.unit==='gal'?prod.size:gal+1);
             const cont=containersNeeded(gal,size);
-            steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`${round2(gal)} gal liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
+            steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`about ${round2(gal)} gal liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
+            usedChlorine=true;
           }
 
-          notes.push('Add chlorine slowly in front of a return with pump running. Keep swimmers out for ~30 minutes.');
+          // Dichlor (hide for vinyl)
+          if(profile.surface!=='vinyl'){
+            const hasD=products.some(p=>p.type==='dichlor');
+            if(hasD){
+              const prod=pickProduct(products,'dichlor');
+              const r=lbsDichlorForFC(delta,V);
+              const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1);
+              const cont=containersNeeded(r.lbs,size);
+              steps.push({title:`Raise FC to ${fcTarget} ppm (Dichlor)`,details:`${round2(r.lbs)} lb dichlor (adds ~${round2(r.cyaGain)} ppm CYA)`,prod:prod,units:cont.units,usePct:cont.usePct});
+            }
+          } else {
+            notes.push('Vinyl liners: avoid granular chlorine (dichlor/cal-hypo). Use liquid chlorine to reduce bleaching risk.');
+          }
         }
 
         // TA up if low
@@ -223,6 +236,11 @@
             steps.push({title:`Raise Salt to ${target} ppm`,details:`${round2(lbs)} lb pool salt`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('Add bags slowly to the deep end, brush to help dissolve. Wait 24h before re-checking cell.');
           }
+        }
+
+        // Cross-safety if both acid and chlorine are in the plan
+        if(usedAcid && usedChlorine){
+          notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.');
         }
 
         // Build shopping table
