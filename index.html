@@ -26,6 +26,7 @@
     .hp-table td,.hp-table th{ padding:6px 8px; border-top:1px solid #f1f5f9; }
     .hp-chip{ display:inline-flex; align-items:center; background:#f1f5f9; color:#0f172a; border-radius:999px; padding:2px 8px; font-size:12px; }
     .hp-note{ font-size:12px; color:#64748b; }
+    .hp-sub{ margin:6px 0 0 12px; }
   </style>
 </head>
 <body>
@@ -89,12 +90,11 @@
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
     const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
 
-    // Salt math (matches industry charts): 83.5 lb / 10k gal raises 1000 ppm
+    // Salt math (matches charts): 83.5 lb / 10k gal raises 1000 ppm
     function lbsSaltForDelta(dSalt, gal){
       if(dSalt <= 0) return 0;
       return dSalt * gal * 0.00000835; // pounds of salt
     }
-    // Convert pounds of salt to ppm change for this pool
     function ppmFromSaltLbs(lbs, gal){
       if(lbs<=0) return 0;
       return lbs / (gal * 0.00000835);
@@ -192,34 +192,36 @@
           }
         }
 
-        // FC to target — both options (except vinyl: liquid-only + warning)
+        // FC to target — grouped options (vinyl: liquid-only + warning)
         const fcTarget = targetFC(profile.sanitizer);
         if(FC>=0 && FC<fcTarget){
           const delta = fcTarget - FC;
 
+          const options=[];
+
           // Liquid chlorine (always shown)
-          const hasLC=products.some(p=>p.type==='liquidChlorine');
-          if(hasLC){
+          if(products.some(p=>p.type==='liquidChlorine')){
             const prod=pickProduct(products,'liquidChlorine');
             const gal=roundQuarterGal(galLCForFC(delta,V));
             const size=(prod && prod.unit==='gal'?prod.size:gal+1);
             const cont=containersNeeded(gal,size);
-            steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`about ${round2(gal)} gal liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
+            options.push({label:'A', title:`Liquid`, details:`about ${round2(gal)} gal liquid chlorine`, prod, units:cont.units, usePct:cont.usePct});
             usedChlorine=true;
           }
 
           // Dichlor (hide for vinyl)
-          if(profile.surface!=='vinyl'){
-            const hasD=products.some(p=>p.type==='dichlor');
-            if(hasD){
-              const prod=pickProduct(products,'dichlor');
-              const r=lbsDichlorForFC(delta,V);
-              const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1);
-              const cont=containersNeeded(r.lbs,size);
-              steps.push({title:`Raise FC to ${fcTarget} ppm (Dichlor)`,details:`${round2(r.lbs)} lb dichlor (adds ~${round2(r.cyaGain)} ppm CYA)`,prod:prod,units:cont.units,usePct:cont.usePct});
-            }
-          } else {
+          if(profile.surface!=='vinyl' && products.some(p=>p.type==='dichlor')){
+            const prod=pickProduct(products,'dichlor');
+            const r=lbsDichlorForFC(delta,V);
+            const size=(prod && prod.unit==='lb'?prod.size:r.lbs+1);
+            const cont=containersNeeded(r.lbs,size);
+            options.push({label:'B', title:`Dichlor`, details:`${round2(r.lbs)} lb dichlor (adds ~${round2(r.cyaGain)} ppm CYA)`, prod, units:cont.units, usePct:cont.usePct});
+          } else if(profile.surface==='vinyl'){
             notes.push('Vinyl liners: avoid granular chlorine (dichlor/cal-hypo). Use liquid chlorine to reduce bleaching risk.');
+          }
+
+          if(options.length>0){
+            steps.push({type:'chlorineGroup', target:fcTarget, options});
           }
         }
 
@@ -257,7 +259,6 @@
               finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
             }
 
-            // if rounding gave 0 bags, it means you're close enough; skip step
             if(bags>0){
               const lbs = bags * bagSize;
               const cont={units:bags,usePct:100};
@@ -271,16 +272,33 @@
         if(usedAcid && usedChlorine){
           notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.');
         }
+        // Chlorine options clarity
+        notes.push('Chlorine options: choose ONE (liquid or dichlor), not both.');
 
         // Build shopping table
-        const shop=steps.map(s=>({
-          name:(s.prod && s.prod.name)?s.prod.name:s.title,
-          containers:s.units||1,
-          size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
-          url:(s.prod && s.prod.url)?s.prod.url:'',
-          note: s.details+' (~'+(s.usePct||100)+'% of last container)'
-        }));
-        setPlan({steps:steps,notes:notes});
+        const shop=[];
+        for(const s of steps){
+          if(s.type==='chlorineGroup'){
+            for(const o of s.options){
+              shop.push({
+                name: (o.prod && o.prod.name) ? o.prod.name : `Chlorine (${o.title})`,
+                containers:o.units||1,
+                size:(o.prod? (o.prod.size+' '+o.prod.unit+(o.prod.pack?(' x'+o.prod.pack):'')) : ''),
+                url:(o.prod && o.prod.url)?o.prod.url:'',
+                note: o.details+' (~'+(o.usePct||100)+'% of last container)'
+              });
+            }
+          }else{
+            shop.push({
+              name:(s.prod && s.prod.name)?s.prod.name:s.title,
+              containers:s.units||1,
+              size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
+              url:(s.prod && s.prod.url)?s.prod.url:'',
+              note: s.details+' (~'+(s.usePct||100)+'% of last container)'
+            });
+          }
+        }
+        setPlan({steps,notes});
         setShopping(shop);
 
         // History (local only)
@@ -357,7 +375,7 @@
               </div>
               <div style={{maxHeight:170,overflow:'auto',marginTop:8}}>
                 <table className="hp-table">
-                  <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>% / URL</th></tr></thead>
+                  <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Strength / Link</th></tr></thead>
                   <tbody>
                     {products.map((p,i)=> (
                       <tr key={i}><td>{p.name}</td><td>{p.type}{p.pack?` (x${p.pack})`:''}</td><td>{p.size} {p.unit}</td><td>{p.pct?`${p.pct}%`:''} {p.url? ' • link' : ''}</td></tr>
@@ -391,19 +409,50 @@
               {plan && (
                 <div>
                   <ol style={{margin:'0 0 0 18px'}}>
-                    {plan.steps.map((s,idx)=> (
-                      <li key={idx} style={{marginBottom:10}}>
-                        <div style={{fontWeight:600}}>{s.title}</div>
-                        <div className="hp-note">{s.details}</div>
-                        {s.prod && (
-                          <div className="hp-note" style={{marginTop:4,display:'flex',gap:8,alignItems:'center'}}>
-                            <span className="hp-chip">{s.prod.name}</span>
-                            {s.prod.url ? <a href={s.prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
-                            <span>Containers: {s.units} (~{s.usePct}% last one)</span>
-                          </div>
-                        )}
-                      </li>
-                    ))}
+                    {plan.steps.map((s,idx)=> {
+                      if(s.type==='chlorineGroup'){
+                        return (
+                          <li key={idx} style={{marginBottom:10}}>
+                            <div style={{fontWeight:600}}>
+                              Raise FC to {s.target} ppm — <span style={{color:'var(--muted)'}}>choose ONE:</span>
+                            </div>
+                            <div className="hp-sub">
+                              <div><strong>A.</strong> {s.options[0]?.title || ''} — <span className="hp-note">{s.options[0]?.details}</span></div>
+                              {s.options[0]?.prod && (
+                                <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
+                                  <span className="hp-chip">{s.options[0].prod.name}</span>
+                                  {s.options[0].prod.url ? <a href={s.options[0].prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
+                                  <span>Containers: {s.options[0].units} (~{s.options[0].usePct}% last one)</span>
+                                </div>
+                              )}
+                              {s.options[1] && (
+                                <>
+                                  <div style={{marginTop:6}}><strong>B.</strong> {s.options[1].title} — <span className="hp-note">{s.options[1].details}</span></div>
+                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
+                                    <span className="hp-chip">{s.options[1].prod.name}</span>
+                                    {s.options[1].prod.url ? <a href={s.options[1].prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
+                                    <span>Containers: {s.options[1].units} (~{s.options[1].usePct}% last one)</span>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      }
+                      return (
+                        <li key={idx} style={{marginBottom:10}}>
+                          <div style={{fontWeight:600}}>{s.title}</div>
+                          <div className="hp-note">{s.details}</div>
+                          {s.prod && (
+                            <div className="hp-note" style={{marginTop:4,display:'flex',gap:8,alignItems:'center'}}>
+                              <span className="hp-chip">{s.prod.name}</span>
+                              {s.prod.url ? <a href={s.prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
+                              <span>Containers: {s.units} (~{s.usePct}% last one)</span>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ol>
                   <div className="hp-note" style={{marginTop:6}}>
                     {plan.notes.map((n,i)=>(<div key={i}>• {n}</div>))}
