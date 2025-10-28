@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Harmony Pools — Water Test</title>
   <style>
-    :root{ --sky:#0ea5e9; --text:#0f172a; --muted:#64748b; --bg:#f1f5f9; }
-    #hp-watertest *{ box-sizing:border-box; font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif; }
+    :root{ --sky:#0ea5e9; --text:#0f172a; --muted:#64748b; --bg:#f1f5f9; --warn:#9a3412; }
+    *{ box-sizing:border-box; font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif; }
     body{ margin:0; background:linear-gradient(#f0f9ff,#fff); color:var(--text); }
     #hp-watertest{ padding:16px; }
     .hp-container{ max-width:1100px; margin:0 auto; }
@@ -27,50 +27,64 @@
     .hp-chip{ display:inline-flex; align-items:center; background:#f1f5f9; color:#0f172a; border-radius:999px; padding:2px 8px; font-size:12px; }
     .hp-note{ font-size:12px; color:#64748b; }
     .hp-sub{ margin:6px 0 0 12px; }
-    .hp-banner{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:12px; padding:8px 10px; font-size:12px; }
+    .hp-banner{ background:#fff7ed; color:var(--warn); border:1px solid #fed7aa; border-radius:12px; padding:10px 12px; font-size:13px; }
+    .hp-fixederr{ position:fixed; left:12px; right:12px; bottom:12px; z-index:9999; }
   </style>
 </head>
 <body>
-  <div id="hp-watertest"></div>
+  <div id="hp-warn" class="hp-fixederr" style="display:none;"></div>
+  <div id="hp-watertest"><div style="padding:16px" class="hp-container"><div class="hp-banner">Loading…</div></div></div>
 
+  <!-- React + ReactDOM + Babel + PapaParse -->
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
+  <script>
+    // Show any runtime error on the page (so we never look "blank")
+    (function(){
+      const box = document.getElementById('hp-warn');
+      function show(msg){
+        box.style.display='block';
+        box.innerHTML = '<div class="hp-banner">'+ msg +'</div>';
+      }
+      window.addEventListener('error', (e)=> show('Script error: '+ (e.message||'unknown')));
+      window.addEventListener('unhandledrejection', (e)=> show('Load error: '+ (e.reason&&e.reason.message ? e.reason.message : String(e.reason||'unknown'))));
+      window.hpShowWarn = show; // allow app to use it too
+    })();
+  </script>
+
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect } = React;
 
-    // Your published CSV
+    // Your published CSV (read-only)
     const REMOTE_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR1HgxbWQ441jPd-mXIQV9Hu1uQTUQztXe6wEUS870HGAdArrs9eSDUoJJBX4waWAarA7fy-m66IPIm/pub?output=csv';
 
-    // ---------- helpers ----------
+    // Small helpers
     const round2=(n)=>Math.round(n*100)/100;
     const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
     const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4);
 
-    // FC target — per your preference: ALWAYS 3 ppm
-    const targetFC = ()=> 3;
+    // Policy: FC target = 3 ppm (always)
+    const targetFC = ()=>3;
 
-    // More conservative acid model with TA scaling + split dosing
+    // Acid model (conservative) with TA & very-high-pH multipliers
     function acidFlOzForDeltaPH(delta, gal, TA, pHstart){
       if (delta<=0) return 0;
-      // Base table per 10k gal of 31.45% acid (approx)
-      const base={0.2:10,0.4:20,0.6:32,0.8:46,1.0:62}; // fl oz /10k
-      const keys=Object.keys(base).map(parseFloat).sort((a,b)=>a-b);
-      let need=base[keys[keys.length-1]];
+      const base={0.2:10,0.4:20,0.6:32,0.8:46,1.0:62}; // fl oz per 10k
+      const keys=[0.2,0.4,0.6,0.8,1.0];
+      let need=62;
       for(let i=0;i<keys.length;i++){
         if(delta===keys[i]){need=base[keys[i]];break;}
         if(delta<keys[i]){
           const k1=keys[i-1]||0,k2=keys[i],v1=k1?base[k1]:0,v2=base[k2];
-          const a=(delta-k1)/(k2-k1); need=v1+a*(v2-v1); break;
+          need=v1+((delta-k1)/(k2-k1))*(v2-v1); break;
         }
       }
-      // TA & high-pH multiplier
-      const taFactor = 1 + Math.max(0, (TA-100))/160;       // TA 260 => ~1+160/160=2.0x
-      const hiPHFactor = pHstart>8.2 ? 1.15 : 1;            // extra push if starting very high
-      let fl = need * (gal/10000) * taFactor * hiPHFactor;  // fl oz total
-      return fl;
+      const taFactor = 1 + Math.max(0,(TA-100))/160;
+      const hiPH = pHstart>8.2 ? 1.15 : 1;
+      return need*(gal/10000)*taFactor*hiPH; // fl oz of 31.45%
     }
 
     function lbsSodaAshForDeltaPH(delta, gal){
@@ -80,7 +94,7 @@
       return ounces/16;
     }
 
-    // Your FC rule: 1 gal (or 1 lb dichlor) per 10k = +3 ppm
+    // Your FC rule
     const galLCForFC = (dFC, gal)=> dFC<=0 ? 0 : (dFC/3)*(gal/10000);
     function lbsDichlorForFC(dFC, gal){
       if(dFC<=0) return {lbs:0,cyaGain:0};
@@ -92,7 +106,7 @@
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
     const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
 
-    // Salt math: 83.5 lb / 10k gal raises 1000 ppm
+    // Salt math
     function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt * gal * 0.00000835; }
     function ppmFromSaltLbs(lbs, gal){ if(lbs<=0) return 0; return lbs / (gal * 0.00000835); }
 
@@ -115,43 +129,36 @@
       { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
     ];
 
-    // CSV loader — tolerant header matching (url/link anywhere)
-    async function loadProductsFromCSV(url){
-      const res = await fetch(url);
-      if(!res.ok) throw new Error('CSV fetch failed');
-      const text = await res.text();
-      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-      if (parsed.errors && parsed.errors.length) throw new Error('CSV parse error');
-
-      const out=[];
-      for (const r of parsed.data){
-        const entries = Object.fromEntries(Object.entries(r).map(([k,v])=>[k.toLowerCase().trim(), String(v??'').trim()]));
-        const findKey = (needle)=> {
-          const n = needle.toLowerCase();
-          return Object.keys(entries).find(k=>k===n);
-        };
-        const findFuzzy = (substrs)=> {
-          const ks = Object.keys(entries);
-          return ks.find(k=> substrs.some(s=>k.includes(s)));
-        };
-
-        const name = entries[ findKey('product name') ] ?? entries['name'] ?? '';
-        const type = entries[ findKey('dose type') ] ?? entries['type'] ?? '';
-        const size = parseFloat(entries[ findKey('size amount') ] ?? entries['size'] ?? '');
-        const unit = entries[ findKey('size unit') ] ?? entries['unit'] ?? '';
-        const pctKey = findFuzzy(['strength','%','percent','available']);
-        const pct  = pctKey ? parseFloat(entries[pctKey]) : undefined;
-        const urlKey = findFuzzy(['url','link']);
-        const url  = urlKey ? entries[urlKey] : '';
-        const packKey = findFuzzy(['pack','case','qty']);
-        const pack = packKey ? parseInt(entries[packKey]) : undefined;
-
-        if (name && type && unit && size>0){
-          out.push({ name, type, size, unit, pct: isFinite(pct)?pct:undefined, url, pack: isFinite(pack)?pack:undefined });
+    // CSV loader with timeout + fuzzy headers for url/link
+    async function loadProductsFromCSV(url, timeoutMs=6000){
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+      try{
+        const res = await fetch(url, {signal: ctrl.signal});
+        if(!res.ok) throw new Error('CSV fetch failed ('+res.status+')');
+        const text = await res.text();
+        const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+        if (parsed.errors && parsed.errors.length) throw new Error('CSV parse error');
+        const out=[];
+        for (const row of parsed.data){
+          const e = Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k||'').toLowerCase().trim(), String(v??'').trim()]));
+          const name = e['product name'] || e['name'] || '';
+          const type = e['dose type'] || e['type'] || '';
+          const size = parseFloat(e['size amount'] || e['size'] || '');
+          const unit = e['size unit'] || e['unit'] || '';
+          const pctKey = Object.keys(e).find(k=> k.includes('strength') || k==='%' || k.includes('percent') || k.includes('available'));
+          const urlKey = Object.keys(e).find(k=> k.includes('url') || k.includes('link'));
+          const packKey = Object.keys(e).find(k=> k.includes('pack') || k.includes('case') || k.includes('qty'));
+          const pct = pctKey ? parseFloat(e[pctKey]) : undefined;
+          const url = urlKey ? e[urlKey] : '';
+          const pack = packKey ? parseInt(e[packKey]) : undefined;
+          if(name && type && unit && size>0){
+            out.push({ name, type, size, unit, pct: isFinite(pct)?pct:undefined, url, pack: isFinite(pack)?pack:undefined });
+          }
         }
-      }
-      if (!out.length) throw new Error('No valid rows');
-      return out;
+        if(!out.length) throw new Error('No valid product rows');
+        return out;
+      } finally { clearTimeout(t); }
     }
 
     function pickProduct(products, type){
@@ -176,7 +183,8 @@
             setProducts(list);
             localStorage.setItem('hp_products', JSON.stringify(list));
           }catch(e){
-            setBanner('Using default products (could not load your sheet yet).');
+            setBanner('Using default products (sheet not loaded yet).');
+            if(window.hpShowWarn) window.hpShowWarn('Products sheet fallback: '+ (e.message||e));
           }
         })();
       },[]);
@@ -207,15 +215,15 @@
           }
         }
 
-        // Lower pH (more conservative & split)
+        // Lower pH (split dosing)
         if(pH>0 && pH>pHTarget){
           const d=clamp(pH-pHTarget,0,1.5);
-          const fl=acidFlOzForDeltaPH(d,V,TA,pH); // fl oz total of 31.45%
+          const fl=acidFlOzForDeltaPH(d,V,TA,pH);
           if(fl>0){
             const prod=pickProduct(products,'acid');
             const totalGal = fl/128;
-            const gal1 = roundQuarterGal(Math.min(totalGal, 1));            // max 1 gal first dose
-            const gal2 = roundQuarterGal(Math.max(0, totalGal - gal1));     // remainder if any
+            const gal1 = roundQuarterGal(Math.min(totalGal, 1));
+            const gal2 = roundQuarterGal(Math.max(0, totalGal - gal1));
             const sizeGal=(prod && prod.unit==='gal'?prod.size:0.25);
             const cont=containersNeeded(gal1,sizeGal);
             steps.push({title:`Lower pH to ${pHTarget}`,details:`about ${round2(gal1)} gal 31.45% muriatic acid (then retest before any remainder)`,prod:prod,units:cont.units,usePct:cont.usePct});
@@ -231,8 +239,7 @@
         // CYA
         const cyaTarget=profile.sanitizer==='swg'?70:40;
         if(CYA>0 && CYA<cyaTarget-5){
-          const d=cyaTarget-CYA;
-          const lbs=lbsStabilizerForCYA(d,V);
+          const lbs=lbsStabilizerForCYA(cyaTarget-CYA,V);
           if(lbs>0){
             const prod=pickProduct(products,'stabilizer');
             const size=(prod && prod.unit==='lb'?prod.size:lbs+1);
@@ -242,12 +249,11 @@
           }
         }
 
-        // FC — ALWAYS to 3 ppm, with A/B options
-        const fcTarget = targetFC();
-        if(FC>=0 && FC<fcTarget){
-          const delta = fcTarget - FC;
+        // FC — ALWAYS to 3 ppm, options A/B (hide B for vinyl)
+        const fcT = targetFC();
+        if(FC>=0 && FC<fcT){
+          const delta = fcT - FC;
           const options=[];
-
           if(products.some(p=>p.type==='liquidChlorine')){
             const prod=pickProduct(products,'liquidChlorine');
             const gal=roundQuarterGal(galLCForFC(delta,V));
@@ -256,7 +262,6 @@
             options.push({label:'A', title:`Liquid`, details:`about ${round2(gal)} gal liquid chlorine`, prod, units:cont.units, usePct:cont.usePct});
             usedChlorine=true;
           }
-
           if(profile.surface!=='vinyl' && products.some(p=>p.type==='dichlor')){
             const prod=pickProduct(products,'dichlor');
             const r=lbsDichlorForFC(delta,V);
@@ -266,8 +271,7 @@
           } else if(profile.surface==='vinyl'){
             notes.push('Vinyl liners: avoid granular chlorine (dichlor/cal-hypo). Use liquid chlorine to reduce bleaching risk.');
           }
-
-          if(options.length>0){ steps.push({type:'chlorineGroup', target:fcTarget, options}); }
+          if(options.length>0){ steps.push({type:'chlorineGroup', target:fcT, options}); }
         }
 
         // TA up if low
@@ -281,14 +285,13 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // Salt (bag rounding & 3800 cap)
+        // Salt with rounding and 3800 cap
         if(profile.sanitizer==='swg' && Salt>0){
           const target=3200;
           if(Salt<target-50){
             const lbsExact = lbsSaltForDelta(target - Salt, V);
             const prod=pickProduct(products,'salt');
             const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40;
-
             let bags = Math.round(lbsExact / bagSize);
             let finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
             while(bags>0 && finalSalt>3800){
@@ -306,52 +309,68 @@
         if(usedAcid && usedChlorine){ notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.'); }
         notes.push('Chlorine options: choose ONE (liquid or dichlor), not both.');
 
-        // Shopping
+        // Shopping list
         const shop=[];
         for(const s of steps){
           if(s.type==='chlorineGroup'){
             for(const o of s.options){
               shop.push({
-                name: (o.prod && o.prod.name) ? o.prod.name : `Chlorine (${o.title})`,
+                name:(o.prod&&o.prod.name)?o.prod.name:`Chlorine (${o.title})`,
                 containers:o.units||1,
                 size:(o.prod? (o.prod.size+' '+o.prod.unit+(o.prod.pack?(' x'+o.prod.pack):'')) : ''),
-                url:(o.prod && o.prod.url)?o.prod.url:'',
-                note: o.details+' (~'+(o.usePct||100)+'% of last container)'
+                url:(o.prod&&o.prod.url)?o.prod.url:'',
+                note:o.details+' (~'+(o.usePct||100)+'% of last container)'
               });
             }
           }else{
             shop.push({
-              name:(s.prod && s.prod.name)?s.prod.name:s.title,
+              name:(s.prod&&s.prod.name)?s.prod.name:s.title,
               containers:s.units||1,
               size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
-              url:(s.prod && s.prod.url)?s.prod.url:'',
-              note: s.details+' (~'+(s.usePct||100)+'% of last container)'
+              url:(s.prod&&s.prod.url)?s.prod.url:'',
+              note:s.details+' (~'+(s.usePct||100)+'% of last container)'
             });
           }
         }
+
         setPlan({steps,notes});
         setShopping(shop);
-
         const hist=JSON.parse(localStorage.getItem('hp_tests')||'[]');
         hist.unshift({at:new Date().toISOString(),profile:profile,test:test});
         while(hist.length>10) hist.pop();
         localStorage.setItem('hp_tests',JSON.stringify(hist));
       }
 
+      // ---------- UI ----------
+      const Table = ({rows}) => (
+        <div style={{overflow:'auto'}}>
+          <table className="hp-table">
+            <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
+            <tbody>
+              {rows.map((it,i)=>(
+                <tr key={i}>
+                  <td>{it.name}</td>
+                  <td>{it.containers}</td>
+                  <td>{it.size}</td>
+                  <td>{it.note}</td>
+                  <td>{it.url ? <a href={it.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+
       return (
         <div className="hp-container">
+          {banner && <div className="hp-banner" style={{marginBottom:12}}>{banner}</div>}
+
           <div className="hp-row" style={{marginBottom:16}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <h1 className="hp-h1">Harmony Pools — Water Test</h1>
               <button className="hp-ghost hp-btn" onClick={()=>alert('Tap your browser menu → Add to Home Screen')}>Install</button>
             </div>
           </div>
-
-          {banner && (
-            <div className="hp-row">
-              <div className="hp-banner">{banner}</div>
-            </div>
-          )}
 
           <div className="hp-row">
             <div className="hp-card">
@@ -391,7 +410,7 @@
                 <table className="hp-table">
                   <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Strength</th><th>Link</th></tr></thead>
                   <tbody>
-                    {products.map((p,i)=> (
+                    {products.map((p,i)=>(
                       <tr key={i}>
                         <td>{p.name}</td>
                         <td>{p.type}{p.pack?` (x${p.pack})`:''}</td>
@@ -410,7 +429,7 @@
             <div className="hp-card">
               <h2 className="hp-h2">Enter Readings</h2>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
-                {['FC','CC','pH','TA','CYA','Salt'].map(key=> (
+                {['FC','CC','pH','TA','CYA','Salt'].map(key=>(
                   <div key={key}>
                     <label className="hp-label">{key}</label>
                     <input className="hp-input" type="number" step="any" value={test[key]} onChange={e=>setTest({...test,[key]:e.target.value})} />
@@ -425,11 +444,11 @@
 
             <div className="hp-card">
               <h2 className="hp-h2">Treatment Plan</h2>
-              {!plan && (<div className="hp-note">Enter readings and tap Generate.</div>)}
+              {!plan && <div className="hp-note">Enter readings and tap Generate.</div>}
               {plan && (
                 <div>
                   <ol style={{margin:'0 0 0 18px'}}>
-                    {plan.steps.map((s,idx)=> {
+                    {plan.steps.map((s,idx)=>{
                       if(s.type==='chlorineGroup'){
                         return (
                           <li key={idx} style={{marginBottom:10}}>
@@ -437,7 +456,7 @@
                               Raise FC to {s.target} ppm — <span style={{color:'var(--muted)'}}>choose ONE:</span>
                             </div>
                             <div className="hp-sub">
-                              <div><strong>A.</strong> {s.options[0]?.title || ''} — <span className="hp-note">{s.options[0]?.details}</span></div>
+                              <div><strong>A.</strong> {s.options[0]?.title} — <span className="hp-note">{s.options[0]?.details}</span></div>
                               {s.options[0]?.prod && (
                                 <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
                                   <span className="hp-chip">{s.options[0].prod.name}</span>
@@ -448,7 +467,7 @@
                               {s.options[1] && (
                                 <>
                                   <div style={{marginTop:6}}><strong>B.</strong> {s.options[1].title} — <span className="hp-note">{s.options[1].details}</span></div>
-                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center')}>
+                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
                                     <span className="hp-chip">{s.options[1].prod.name}</span>
                                     {s.options[1].prod.url ? <a href={s.options[1].prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
                                     <span>Containers: {s.options[1].units} (~{s.options[1].usePct}% last one)</span>
@@ -475,7 +494,7 @@
                     })}
                   </ol>
                   <div className="hp-note" style={{marginTop:6}}>
-                    {plan.notes.map((n,i)=>(<div key={i}>• {n}</div>))}
+                    {plan.notes.map((n,i)=><div key={i}>• {n}</div>)}
                     <div>Safety: Wear PPE. Add chemicals separately with pump running. Never mix.</div>
                   </div>
                 </div>
@@ -486,35 +505,23 @@
           <div className="hp-row" style={{marginTop:16}}>
             <div className="hp-card">
               <h2 className="hp-h2">Shopping List</h2>
-              {shopping.length===0 && (<div className="hp-note">Generate a plan to build your list.</div>)}
-              {shopping.length>0 && (
-                <div style={{overflow:'auto'}}>
-                  <table className="hp-table">
-                    <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
-                    <tbody>
-                      {shopping.map((it,i)=> (
-                        <tr key={i}>
-                          <td>{it.name}</td>
-                          <td>{it.containers}</td>
-                          <td>{it.size}</td>
-                          <td>{it.note}</td>
-                          <td>{it.url? <a href={it.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              <div id="hp-shop">
+                {/* filled after generate */}
+              </div>
             </div>
           </div>
-
-          <div className="hp-note" style={{marginTop:18}}>Preview only — formulas are approximations. Retest after each step. CYA and salt may take 24–48h to reflect.</div>
         </div>
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('hp-watertest'));
-    root.render(<App/>);
+    // Mount safely
+    try{
+      const root = ReactDOM.createRoot(document.getElementById('hp-watertest'));
+      root.render(<App/>);
+    }catch(e){
+      if(window.hpShowWarn) window.hpShowWarn('App failed to start: '+ (e.message||e));
+      throw e;
+    }
   </script>
 </body>
 </html>
