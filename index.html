@@ -33,79 +33,68 @@
 <body>
   <div id="hp-watertest"></div>
 
-  <!-- React + ReactDOM -->
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Papa Parse for robust CSV parsing -->
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
-  <!-- App -->
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect } = React;
 
-    // =========================
-    //  Your published CSV (read-only)
-    // =========================
+    // Your published CSV
     const REMOTE_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR1HgxbWQ441jPd-mXIQV9Hu1uQTUQztXe6wEUS870HGAdArrs9eSDUoJJBX4waWAarA7fy-m66IPIm/pub?output=csv';
 
     // ---------- helpers ----------
     const round2=(n)=>Math.round(n*100)/100;
     const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
-    const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4); // nearest 1/4 gal, min 1/4 if nonzero
+    const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4);
 
-    // Harmony Pools policy
-    const targetFC = (sanitizer)=> sanitizer==='swg' ? 5 : 3; // SWG 5 ppm, others 3 ppm
+    // FC target — per your preference: ALWAYS 3 ppm
+    const targetFC = ()=> 3;
 
-    // Lower pH with acid (approx table, fl oz 31.45% per 10k per ΔpH)
-    function acidFlOzForDeltaPH(delta, gal, TA){
+    // More conservative acid model with TA scaling + split dosing
+    function acidFlOzForDeltaPH(delta, gal, TA, pHstart){
       if (delta<=0) return 0;
-      const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32};
-      const keys=Object.keys(t).map(parseFloat).sort((a,b)=>a-b);
-      let need=t[keys[keys.length-1]];
+      // Base table per 10k gal of 31.45% acid (approx)
+      const base={0.2:10,0.4:20,0.6:32,0.8:46,1.0:62}; // fl oz /10k
+      const keys=Object.keys(base).map(parseFloat).sort((a,b)=>a-b);
+      let need=base[keys[keys.length-1]];
       for(let i=0;i<keys.length;i++){
-        if(delta===keys[i]){need=t[keys[i]];break;}
+        if(delta===keys[i]){need=base[keys[i]];break;}
         if(delta<keys[i]){
-          const k1=keys[i-1]||0,k2=keys[i],v1=k1?t[k1]:0,v2=t[k2];
+          const k1=keys[i-1]||0,k2=keys[i],v1=k1?base[k1]:0,v2=base[k2];
           const a=(delta-k1)/(k2-k1); need=v1+a*(v2-v1); break;
         }
       }
-      let fl=need*(gal/10000);
-      if(TA&&TA>120) fl*=.85; if(TA&&TA<60) fl*=1.15;
-      return fl; // fl oz of 31.45%
+      // TA & high-pH multiplier
+      const taFactor = 1 + Math.max(0, (TA-100))/160;       // TA 260 => ~1+160/160=2.0x
+      const hiPHFactor = pHstart>8.2 ? 1.15 : 1;            // extra push if starting very high
+      let fl = need * (gal/10000) * taFactor * hiPHFactor;  // fl oz total
+      return fl;
     }
 
-    // Raise pH with soda ash — ~12 oz / 10k raises ≈0.2 pH (field rule)
     function lbsSodaAshForDeltaPH(delta, gal){
       if (delta<=0) return 0;
       const ozPer10kPer0_2 = 12;
       const ounces = (delta/0.2) * ozPer10kPer0_2 * (gal/10000);
-      return ounces/16; // lb
+      return ounces/16;
     }
 
-    // Your dosing rules: 1 gal (or 1 lb dichlor) per 10k = +3 ppm FC
+    // Your FC rule: 1 gal (or 1 lb dichlor) per 10k = +3 ppm
     const galLCForFC = (dFC, gal)=> dFC<=0 ? 0 : (dFC/3)*(gal/10000);
     function lbsDichlorForFC(dFC, gal){
       if(dFC<=0) return {lbs:0,cyaGain:0};
       const lbs=(dFC/3)*(gal/10000);
-      const cyaGain = lbs*6*(10000/gal); // ~+6 ppm CYA per lb per 10k
+      const cyaGain = lbs*6*(10000/gal);
       return {lbs,cyaGain};
     }
 
-    // Other utilities
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
     const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
 
-    // Salt math (matches charts): 83.5 lb / 10k gal raises 1000 ppm
-    function lbsSaltForDelta(dSalt, gal){
-      if(dSalt <= 0) return 0;
-      return dSalt * gal * 0.00000835; // pounds of salt
-    }
-    function ppmFromSaltLbs(lbs, gal){
-      if(lbs<=0) return 0;
-      return lbs / (gal * 0.00000835);
-    }
+    // Salt math: 83.5 lb / 10k gal raises 1000 ppm
+    function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt * gal * 0.00000835; }
+    function ppmFromSaltLbs(lbs, gal){ if(lbs<=0) return 0; return lbs / (gal * 0.00000835); }
 
     function containersNeeded(amount,size){
       if(!size||size<=0) return {units:0,usePct:0};
@@ -114,7 +103,6 @@
       return {units:u,usePct:Math.min(100,Math.round(p))};
     }
 
-    // Default products (urls blank by default)
     const DEFAULT_PRODUCTS=[
       { name:'Muriatic Acid gallon', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:undefined },
       { name:'Muriatic Acid case', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:4 },
@@ -127,33 +115,36 @@
       { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
     ];
 
-    // --- CSV loader with Papa Parse + safety ---
+    // CSV loader — tolerant header matching (url/link anywhere)
     async function loadProductsFromCSV(url){
-      const res = await fetch(url); // published Google CSV is CORS-OK
+      const res = await fetch(url);
       if(!res.ok) throw new Error('CSV fetch failed');
       const text = await res.text();
-
-      // Parse with headers; handles quoted commas safely
       const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-      if (parsed.errors && parsed.errors.length) {
-        // Don't crash the app; just throw to fall back
-        throw new Error('CSV parse error');
-      }
-      const rows = parsed.data;
+      if (parsed.errors && parsed.errors.length) throw new Error('CSV parse error');
 
-      // Map columns case-insensitively
-      const norm = (s)=> String(s||'').trim();
       const out=[];
-      for (const r of rows){
-        const name = norm(r['Product Name'] || r['product name'] || r['Name'] || r['name']);
-        const type = norm(r['Dose Type'] || r['type'] || r['Type']);
-        const size = parseFloat(norm(r['Size Amount'] || r['size amount'] || r['Size'] || r['size'] || ''));
-        const unit = norm(r['Size Unit'] || r['size unit'] || r['Unit'] || r['unit']);
-        const pct  = r['Strength']!=null ? parseFloat(norm(r['Strength'])) :
-                     r['strength']!=null ? parseFloat(norm(r['strength'])) : undefined;
-        const url  = norm(r['URL'] || r['Url'] || r['url'] || r['Link'] || r['link']);
-        const pack = r['Pack Qty']!=null ? parseInt(norm(r['Pack Qty'])) :
-                     r['pack qty']!=null ? parseInt(norm(r['pack qty'])) : undefined;
+      for (const r of parsed.data){
+        const entries = Object.fromEntries(Object.entries(r).map(([k,v])=>[k.toLowerCase().trim(), String(v??'').trim()]));
+        const findKey = (needle)=> {
+          const n = needle.toLowerCase();
+          return Object.keys(entries).find(k=>k===n);
+        };
+        const findFuzzy = (substrs)=> {
+          const ks = Object.keys(entries);
+          return ks.find(k=> substrs.some(s=>k.includes(s)));
+        };
+
+        const name = entries[ findKey('product name') ] ?? entries['name'] ?? '';
+        const type = entries[ findKey('dose type') ] ?? entries['type'] ?? '';
+        const size = parseFloat(entries[ findKey('size amount') ] ?? entries['size'] ?? '');
+        const unit = entries[ findKey('size unit') ] ?? entries['unit'] ?? '';
+        const pctKey = findFuzzy(['strength','%','percent','available']);
+        const pct  = pctKey ? parseFloat(entries[pctKey]) : undefined;
+        const urlKey = findFuzzy(['url','link']);
+        const url  = urlKey ? entries[urlKey] : '';
+        const packKey = findFuzzy(['pack','case','qty']);
+        const pack = packKey ? parseInt(entries[packKey]) : undefined;
 
         if (name && type && unit && size>0){
           out.push({ name, type, size, unit, pct: isFinite(pct)?pct:undefined, url, pack: isFinite(pack)?pack:undefined });
@@ -178,7 +169,6 @@
       const [shopping,setShopping]=useState([]);
       const [banner,setBanner]=useState('');
 
-      // Load your CSV once; if it fails, keep defaults and show a small banner.
       useEffect(()=>{
         (async ()=>{
           try{
@@ -201,10 +191,9 @@
         const steps=[], notes=[];
         let usedAcid=false, usedChlorine=false;
 
-        // pH target
         const pHTarget = 7.5;
 
-        // Raise pH (soda ash)
+        // Raise pH
         if(pH>0 && pH<pHTarget){
           const d = clamp(pHTarget - pH, 0, 1.5);
           const lbs = lbsSodaAshForDeltaPH(d, V);
@@ -214,28 +203,32 @@
             const cont=containersNeeded(lbs,size);
             steps.push({title:`Raise pH to ${pHTarget}`,details:`${round2(lbs)} lb soda ash (sodium carbonate)`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('Broadcast soda ash slowly across the deep end with pump running. Retest pH in 30–60 minutes.');
-            if(lbs>5){
-              notes.push('Never add more than 5 lb of soda ash at a time. Split larger doses into smaller additions over ~24 hours with the pump running.');
-            }
+            if(lbs>5){ notes.push('Never add more than 5 lb of soda ash at a time. Split larger doses into smaller additions over ~24 hours with the pump running.'); }
           }
         }
 
-        // Lower pH (acid)
+        // Lower pH (more conservative & split)
         if(pH>0 && pH>pHTarget){
-          const d=clamp(pH-pHTarget,0,1.2);
-          const fl=acidFlOzForDeltaPH(d,V,TA); // fl oz of 31.45%
+          const d=clamp(pH-pHTarget,0,1.5);
+          const fl=acidFlOzForDeltaPH(d,V,TA,pH); // fl oz total of 31.45%
           if(fl>0){
             const prod=pickProduct(products,'acid');
-            const gal=roundQuarterGal(fl/128);
-            const sizeGal=(prod && prod.unit==='gal'?prod.size: (prod && prod.unit==='qt'?0.25:gal));
-            const cont=containersNeeded(gal,sizeGal);
-            steps.push({title:`Lower pH to ${pHTarget}`,details:`about ${round2(gal)} gal 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
-            notes.push('With pump running, pour acid slowly in front of a return. Retest pH in 30–60 minutes.');
+            const totalGal = fl/128;
+            const gal1 = roundQuarterGal(Math.min(totalGal, 1));            // max 1 gal first dose
+            const gal2 = roundQuarterGal(Math.max(0, totalGal - gal1));     // remainder if any
+            const sizeGal=(prod && prod.unit==='gal'?prod.size:0.25);
+            const cont=containersNeeded(gal1,sizeGal);
+            steps.push({title:`Lower pH to ${pHTarget}`,details:`about ${round2(gal1)} gal 31.45% muriatic acid (then retest before any remainder)`,prod:prod,units:cont.units,usePct:cont.usePct});
+            if(gal2>0){
+              const cont2=containersNeeded(gal2,sizeGal);
+              steps.push({title:`If pH still above ${pHTarget} after retest`,details:`add ~${round2(gal2)} gal more acid`,prod:prod,units:cont2.units,usePct:cont2.usePct});
+            }
+            notes.push('With pump running, pour acid slowly in front of a return. Retest pH in 30–60 minutes before adding any remainder.');
             usedAcid=true;
           }
         }
 
-        // CYA raise if needed
+        // CYA
         const cyaTarget=profile.sanitizer==='swg'?70:40;
         if(CYA>0 && CYA<cyaTarget-5){
           const d=cyaTarget-CYA;
@@ -249,14 +242,12 @@
           }
         }
 
-        // FC to target — grouped options (vinyl: liquid-only + warning)
-        const fcTarget = targetFC(profile.sanitizer);
+        // FC — ALWAYS to 3 ppm, with A/B options
+        const fcTarget = targetFC();
         if(FC>=0 && FC<fcTarget){
           const delta = fcTarget - FC;
-
           const options=[];
 
-          // Liquid chlorine (always shown)
           if(products.some(p=>p.type==='liquidChlorine')){
             const prod=pickProduct(products,'liquidChlorine');
             const gal=roundQuarterGal(galLCForFC(delta,V));
@@ -266,7 +257,6 @@
             usedChlorine=true;
           }
 
-          // Dichlor (hide for vinyl)
           if(profile.surface!=='vinyl' && products.some(p=>p.type==='dichlor')){
             const prod=pickProduct(products,'dichlor');
             const r=lbsDichlorForFC(delta,V);
@@ -277,9 +267,7 @@
             notes.push('Vinyl liners: avoid granular chlorine (dichlor/cal-hypo). Use liquid chlorine to reduce bleaching risk.');
           }
 
-          if(options.length>0){
-            steps.push({type:'chlorineGroup', target:fcTarget, options});
-          }
+          if(options.length>0){ steps.push({type:'chlorineGroup', target:fcTarget, options}); }
         }
 
         // TA up if low
@@ -293,46 +281,32 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // Salt for SWG with bag rounding and 3800 ppm cap
+        // Salt (bag rounding & 3800 cap)
         if(profile.sanitizer==='swg' && Salt>0){
           const target=3200;
-          if(Salt<target-50){ // small deadband
-            const delta = target - Salt; // ppm needed to 3200
-            const lbsExact = lbsSaltForDelta(delta, V);
-
+          if(Salt<target-50){
+            const lbsExact = lbsSaltForDelta(target - Salt, V);
             const prod=pickProduct(products,'salt');
-            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40; // default to 40 lb bag
+            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40;
 
-            // nearest whole bag
             let bags = Math.round(lbsExact / bagSize);
-
-            // compute final ppm if we add that many bags
-            const ppmAddedForBags = ppmFromSaltLbs(bags * bagSize, V);
-            let finalSalt = Salt + ppmAddedForBags;
-
-            // never exceed 3800 ppm; back off until safe
+            let finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
             while(bags>0 && finalSalt>3800){
               bags -= 1;
               finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
             }
-
             if(bags>0){
               const lbs = bags * bagSize;
-              const cont={units:bags,usePct:100};
-              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod:prod,units:cont.units,usePct:cont.usePct});
+              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod,units:bags,usePct:100});
               notes.push('Add bags of salt slowly to the deep end, and brush to help dissolve. Wait ~24h before re-checking the cell.');
             }
           }
         }
 
-        // Cross-safety if both acid and chlorine are in the plan
-        if(usedAcid && usedChlorine){
-          notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.');
-        }
-        // Chlorine options clarity
+        if(usedAcid && usedChlorine){ notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.'); }
         notes.push('Chlorine options: choose ONE (liquid or dichlor), not both.');
 
-        // Build shopping table
+        // Shopping
         const shop=[];
         for(const s of steps){
           if(s.type==='chlorineGroup'){
@@ -358,7 +332,6 @@
         setPlan({steps,notes});
         setShopping(shop);
 
-        // History (local only)
         const hist=JSON.parse(localStorage.getItem('hp_tests')||'[]');
         hist.unshift({at:new Date().toISOString(),profile:profile,test:test});
         while(hist.length>10) hist.pop();
@@ -475,7 +448,7 @@
                               {s.options[1] && (
                                 <>
                                   <div style={{marginTop:6}}><strong>B.</strong> {s.options[1].title} — <span className="hp-note">{s.options[1].details}</span></div>
-                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
+                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center')}>
                                     <span className="hp-chip">{s.options[1].prod.name}</span>
                                     {s.options[1].prod.url ? <a href={s.options[1].prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
                                     <span>Containers: {s.options[1].units} (~{s.options[1].usePct}% last one)</span>
