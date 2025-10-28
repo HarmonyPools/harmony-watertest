@@ -27,34 +27,38 @@
     .hp-chip{ display:inline-flex; align-items:center; background:#f1f5f9; color:#0f172a; border-radius:999px; padding:2px 8px; font-size:12px; }
     .hp-note{ font-size:12px; color:#64748b; }
     .hp-sub{ margin:6px 0 0 12px; }
+    .hp-banner{ background:#fff7ed; color:#9a3412; border:1px solid #fed7aa; border-radius:12px; padding:8px 10px; font-size:12px; }
   </style>
 </head>
 <body>
   <div id="hp-watertest"></div>
 
+  <!-- React + ReactDOM -->
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Papa Parse for robust CSV parsing -->
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
+  <!-- App -->
   <script type="text/babel" data-presets="env,react">
     const { useState, useEffect } = React;
 
     // =========================
-    //  CONFIG: paste your CSV URL here (from “Publish to web”)
-    //  Example format:
-    //  https://docs.google.com/spreadsheets/d/XXXX/export?format=csv
+    //  Your published CSV (read-only)
     // =========================
     const REMOTE_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR1HgxbWQ441jPd-mXIQV9Hu1uQTUQztXe6wEUS870HGAdArrs9eSDUoJJBX4waWAarA7fy-m66IPIm/pub?output=csv';
 
     // ---------- helpers ----------
     const round2=(n)=>Math.round(n*100)/100;
     const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
-    const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4);
+    const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4); // nearest 1/4 gal, min 1/4 if nonzero
 
     // Harmony Pools policy
-    const targetFC = (sanitizer)=> sanitizer==='swg' ? 5 : 3;
+    const targetFC = (sanitizer)=> sanitizer==='swg' ? 5 : 3; // SWG 5 ppm, others 3 ppm
 
-    // Acid dose (approx, fl oz 31.45% per 10k per ΔpH)
+    // Lower pH with acid (approx table, fl oz 31.45% per 10k per ΔpH)
     function acidFlOzForDeltaPH(delta, gal, TA){
       if (delta<=0) return 0;
       const t={0.2:6,0.4:12,0.6:18,0.8:24,1.0:32};
@@ -69,32 +73,39 @@
       }
       let fl=need*(gal/10000);
       if(TA&&TA>120) fl*=.85; if(TA&&TA<60) fl*=1.15;
-      return fl;
+      return fl; // fl oz of 31.45%
     }
 
-    // Raise pH with soda ash — ~12 oz / 10k raises ≈0.2 pH
+    // Raise pH with soda ash — ~12 oz / 10k raises ≈0.2 pH (field rule)
     function lbsSodaAshForDeltaPH(delta, gal){
       if (delta<=0) return 0;
       const ozPer10kPer0_2 = 12;
       const ounces = (delta/0.2) * ozPer10kPer0_2 * (gal/10000);
-      return ounces/16;
+      return ounces/16; // lb
     }
 
-    // Your FC rule: 1 gal (or 1 lb dichlor) per 10k = +3 ppm
+    // Your dosing rules: 1 gal (or 1 lb dichlor) per 10k = +3 ppm FC
     const galLCForFC = (dFC, gal)=> dFC<=0 ? 0 : (dFC/3)*(gal/10000);
     function lbsDichlorForFC(dFC, gal){
       if(dFC<=0) return {lbs:0,cyaGain:0};
       const lbs=(dFC/3)*(gal/10000);
-      const cyaGain = lbs*6*(10000/gal);
+      const cyaGain = lbs*6*(10000/gal); // ~+6 ppm CYA per lb per 10k
       return {lbs,cyaGain};
     }
 
+    // Other utilities
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
     const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
 
-    // Salt math (charts): 83.5 lb / 10k gal raises 1000 ppm
-    function lbsSaltForDelta(dSalt, gal){ if(dSalt<=0) return 0; return dSalt * gal * 0.00000835; }
-    function ppmFromSaltLbs(lbs, gal){ if(lbs<=0) return 0; return lbs / (gal * 0.00000835); }
+    // Salt math (matches charts): 83.5 lb / 10k gal raises 1000 ppm
+    function lbsSaltForDelta(dSalt, gal){
+      if(dSalt <= 0) return 0;
+      return dSalt * gal * 0.00000835; // pounds of salt
+    }
+    function ppmFromSaltLbs(lbs, gal){
+      if(lbs<=0) return 0;
+      return lbs / (gal * 0.00000835);
+    }
 
     function containersNeeded(amount,size){
       if(!size||size<=0) return {units:0,usePct:0};
@@ -104,7 +115,7 @@
     }
 
     // Default products (urls blank by default)
-    var DEFAULT_PRODUCTS=[
+    const DEFAULT_PRODUCTS=[
       { name:'Muriatic Acid gallon', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:undefined },
       { name:'Muriatic Acid case', type:'acid', size:1, unit:'gal', pct:31.45, url:'', pack:4 },
       { name:'Liquid Chlorine case', type:'liquidChlorine', size:1, unit:'gal', pct:12.5, url:'', pack:4 },
@@ -116,47 +127,39 @@
       { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
     ];
 
-    // Try to fetch products from a published CSV (optional)
+    // --- CSV loader with Papa Parse + safety ---
     async function loadProductsFromCSV(url){
-      const res = await fetch(url, {mode:'cors'});
+      const res = await fetch(url); // published Google CSV is CORS-OK
       if(!res.ok) throw new Error('CSV fetch failed');
       const text = await res.text();
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const header = lines.shift(); if(!header) throw new Error('Empty CSV');
-      const cols = header.split(',').map(s=>s.trim());
 
-      // Flexible matching of headings you used before
-      const pick = (rx)=> cols.findIndex(c=> rx.test(c));
-      const idx = {
-        name: pick(/^(product\s*name)$/i),
-        type: pick(/^(dose\s*type|type)$/i),
-        size: pick(/^(size\s*amount|size)$/i),
-        unit: pick(/^(size\s*unit|unit)$/i),
-        pct:  pick(/^(strength|%|percent)$/i),
-        url:  pick(/^(url|link)$/i),
-        notes: pick(/^notes?$/i),
-        pack: pick(/^(pack|case|qty)$/i),
-      };
+      // Parse with headers; handles quoted commas safely
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      if (parsed.errors && parsed.errors.length) {
+        // Don't crash the app; just throw to fall back
+        throw new Error('CSV parse error');
+      }
+      const rows = parsed.data;
 
+      // Map columns case-insensitively
+      const norm = (s)=> String(s||'').trim();
       const out=[];
-      for(const row of lines){
-        const cells=row.split(',');
-        const get=(k)=> idx[k]>=0 ? (cells[idx[k]]||'').trim() : '';
-        const name=get('name'), type=get('type'), unit=get('unit');
-        const size=parseFloat(get('size')||'0');
-        if(name && type && unit && size){
-          const p={
-            name, type,
-            size, unit,
-            pct: get('pct') ? parseFloat(get('pct')) : undefined,
-            url: get('url')||'',
-            notes: get('notes')||undefined,
-            pack: get('pack') ? parseInt(get('pack')) : undefined
-          };
-          out.push(p);
+      for (const r of rows){
+        const name = norm(r['Product Name'] || r['product name'] || r['Name'] || r['name']);
+        const type = norm(r['Dose Type'] || r['type'] || r['Type']);
+        const size = parseFloat(norm(r['Size Amount'] || r['size amount'] || r['Size'] || r['size'] || ''));
+        const unit = norm(r['Size Unit'] || r['size unit'] || r['Unit'] || r['unit']);
+        const pct  = r['Strength']!=null ? parseFloat(norm(r['Strength'])) :
+                     r['strength']!=null ? parseFloat(norm(r['strength'])) : undefined;
+        const url  = norm(r['URL'] || r['Url'] || r['url'] || r['Link'] || r['link']);
+        const pack = r['Pack Qty']!=null ? parseInt(norm(r['Pack Qty'])) :
+                     r['pack qty']!=null ? parseInt(norm(r['pack qty'])) : undefined;
+
+        if (name && type && unit && size>0){
+          out.push({ name, type, size, unit, pct: isFinite(pct)?pct:undefined, url, pack: isFinite(pack)?pack:undefined });
         }
       }
-      if(out.length===0) throw new Error('No valid rows');
+      if (!out.length) throw new Error('No valid rows');
       return out;
     }
 
@@ -173,16 +176,19 @@
       const [test,setTest]=useState({FC:'',CC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''});
       const [plan,setPlan]=useState(null);
       const [shopping,setShopping]=useState([]);
+      const [banner,setBanner]=useState('');
 
-      // Try remote CSV once on load (if URL present); fall back silently to defaults
+      // Load your CSV once; if it fails, keep defaults and show a small banner.
       useEffect(()=>{
-        if(!REMOTE_CSV) return;
-        loadProductsFromCSV(REMOTE_CSV)
-          .then(list=>{
+        (async ()=>{
+          try{
+            const list = await loadProductsFromCSV(REMOTE_CSV);
             setProducts(list);
-            localStorage.setItem('hp_products',JSON.stringify(list));
-          })
-          .catch(()=>{/* ignore; keep defaults */});
+            localStorage.setItem('hp_products', JSON.stringify(list));
+          }catch(e){
+            setBanner('Using default products (could not load your sheet yet).');
+          }
+        })();
       },[]);
 
       useEffect(()=>{ localStorage.setItem('hp_profile',JSON.stringify(profile)); },[profile]);
@@ -195,9 +201,10 @@
         const steps=[], notes=[];
         let usedAcid=false, usedChlorine=false;
 
+        // pH target
         const pHTarget = 7.5;
 
-        // Raise pH
+        // Raise pH (soda ash)
         if(pH>0 && pH<pHTarget){
           const d = clamp(pHTarget - pH, 0, 1.5);
           const lbs = lbsSodaAshForDeltaPH(d, V);
@@ -207,14 +214,16 @@
             const cont=containersNeeded(lbs,size);
             steps.push({title:`Raise pH to ${pHTarget}`,details:`${round2(lbs)} lb soda ash (sodium carbonate)`,prod:prod,units:cont.units,usePct:cont.usePct});
             notes.push('Broadcast soda ash slowly across the deep end with pump running. Retest pH in 30–60 minutes.');
-            if(lbs>5){ notes.push('Never add more than 5 lb of soda ash at a time. Split larger doses into smaller additions over ~24 hours with the pump running.'); }
+            if(lbs>5){
+              notes.push('Never add more than 5 lb of soda ash at a time. Split larger doses into smaller additions over ~24 hours with the pump running.');
+            }
           }
         }
 
-        // Lower pH
+        // Lower pH (acid)
         if(pH>0 && pH>pHTarget){
           const d=clamp(pH-pHTarget,0,1.2);
-          const fl=acidFlOzForDeltaPH(d,V,TA);
+          const fl=acidFlOzForDeltaPH(d,V,TA); // fl oz of 31.45%
           if(fl>0){
             const prod=pickProduct(products,'acid');
             const gal=roundQuarterGal(fl/128);
@@ -226,7 +235,7 @@
           }
         }
 
-        // CYA
+        // CYA raise if needed
         const cyaTarget=profile.sanitizer==='swg'?70:40;
         if(CYA>0 && CYA<cyaTarget-5){
           const d=cyaTarget-CYA;
@@ -240,12 +249,14 @@
           }
         }
 
-        // FC — grouped options
+        // FC to target — grouped options (vinyl: liquid-only + warning)
         const fcTarget = targetFC(profile.sanitizer);
         if(FC>=0 && FC<fcTarget){
           const delta = fcTarget - FC;
+
           const options=[];
 
+          // Liquid chlorine (always shown)
           if(products.some(p=>p.type==='liquidChlorine')){
             const prod=pickProduct(products,'liquidChlorine');
             const gal=roundQuarterGal(galLCForFC(delta,V));
@@ -255,6 +266,7 @@
             usedChlorine=true;
           }
 
+          // Dichlor (hide for vinyl)
           if(profile.surface!=='vinyl' && products.some(p=>p.type==='dichlor')){
             const prod=pickProduct(products,'dichlor');
             const r=lbsDichlorForFC(delta,V);
@@ -265,7 +277,9 @@
             notes.push('Vinyl liners: avoid granular chlorine (dichlor/cal-hypo). Use liquid chlorine to reduce bleaching risk.');
           }
 
-          if(options.length>0){ steps.push({type:'chlorineGroup', target:fcTarget, options}); }
+          if(options.length>0){
+            steps.push({type:'chlorineGroup', target:fcTarget, options});
+          }
         }
 
         // TA up if low
@@ -279,32 +293,46 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // Salt w/ bag rounding & 3800 cap
+        // Salt for SWG with bag rounding and 3800 ppm cap
         if(profile.sanitizer==='swg' && Salt>0){
           const target=3200;
-          if(Salt<target-50){
-            const lbsExact = lbsSaltForDelta(target - Salt, V);
-            const prod=pickProduct(products,'salt');
-            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40;
+          if(Salt<target-50){ // small deadband
+            const delta = target - Salt; // ppm needed to 3200
+            const lbsExact = lbsSaltForDelta(delta, V);
 
+            const prod=pickProduct(products,'salt');
+            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40; // default to 40 lb bag
+
+            // nearest whole bag
             let bags = Math.round(lbsExact / bagSize);
-            let finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
+
+            // compute final ppm if we add that many bags
+            const ppmAddedForBags = ppmFromSaltLbs(bags * bagSize, V);
+            let finalSalt = Salt + ppmAddedForBags;
+
+            // never exceed 3800 ppm; back off until safe
             while(bags>0 && finalSalt>3800){
               bags -= 1;
               finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
             }
+
             if(bags>0){
               const lbs = bags * bagSize;
-              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod,units:bags,usePct:100});
+              const cont={units:bags,usePct:100};
+              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod:prod,units:cont.units,usePct:cont.usePct});
               notes.push('Add bags of salt slowly to the deep end, and brush to help dissolve. Wait ~24h before re-checking the cell.');
             }
           }
         }
 
-        if(usedAcid && usedChlorine){ notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.'); }
+        // Cross-safety if both acid and chlorine are in the plan
+        if(usedAcid && usedChlorine){
+          notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.');
+        }
+        // Chlorine options clarity
         notes.push('Chlorine options: choose ONE (liquid or dichlor), not both.');
 
-        // Shopping
+        // Build shopping table
         const shop=[];
         for(const s of steps){
           if(s.type==='chlorineGroup'){
@@ -330,6 +358,7 @@
         setPlan({steps,notes});
         setShopping(shop);
 
+        // History (local only)
         const hist=JSON.parse(localStorage.getItem('hp_tests')||'[]');
         hist.unshift({at:new Date().toISOString(),profile:profile,test:test});
         while(hist.length>10) hist.pop();
@@ -344,6 +373,12 @@
               <button className="hp-ghost hp-btn" onClick={()=>alert('Tap your browser menu → Add to Home Screen')}>Install</button>
             </div>
           </div>
+
+          {banner && (
+            <div className="hp-row">
+              <div className="hp-banner">{banner}</div>
+            </div>
+          )}
 
           <div className="hp-row">
             <div className="hp-card">
@@ -440,7 +475,7 @@
                               {s.options[1] && (
                                 <>
                                   <div style={{marginTop:6}}><strong>B.</strong> {s.options[1].title} — <span className="hp-note">{s.options[1].details}</span></div>
-                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center')}>
+                                  <div className="hp-note" style={{marginLeft:18,display:'flex',gap:8,alignItems:'center'}}>
                                     <span className="hp-chip">{s.options[1].prod.name}</span>
                                     {s.options[1].prod.url ? <a href={s.options[1].prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
                                     <span>Containers: {s.options[1].units} (~{s.options[1].usePct}% last one)</span>
