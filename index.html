@@ -45,7 +45,7 @@
     // ---------- helpers ----------
     const round2=(n)=>Math.round(n*100)/100;
     const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
-    const roundQuarterGal=(gal)=> Math.max(0.25, Math.round(gal*4)/4); // nearest 1/4 gal, floor at 1/4 if nonzero
+    const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4); // nearest 1/4 gal, min 1/4 if nonzero
 
     // Harmony Pools policy
     const targetFC = (sanitizer)=> sanitizer==='swg' ? 5 : 3; // SWG 5 ppm, others 3 ppm
@@ -88,7 +88,18 @@
     // Other utilities
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
     const lbsStabilizerForCYA = (dCYA, gal)=> dCYA<=0 ? 0 : (dCYA/10)*0.8125*(gal/10000);
-    const lbsSaltForDelta = (dSalt, gal)=> dSalt<=0 ? 0 : dSalt*gal*0.00006;
+
+    // Salt math (matches industry charts): 83.5 lb / 10k gal raises 1000 ppm
+    function lbsSaltForDelta(dSalt, gal){
+      if(dSalt <= 0) return 0;
+      return dSalt * gal * 0.00000835; // pounds of salt
+    }
+    // Convert pounds of salt to ppm change for this pool
+    function ppmFromSaltLbs(lbs, gal){
+      if(lbs<=0) return 0;
+      return lbs / (gal * 0.00000835);
+    }
+
     function containersNeeded(amount,size){
       if(!size||size<=0) return {units:0,usePct:0};
       const u=Math.ceil(amount/size);
@@ -158,8 +169,7 @@
           const fl=acidFlOzForDeltaPH(d,V,TA); // fl oz of 31.45%
           if(fl>0){
             const prod=pickProduct(products,'acid');
-            const galRaw=fl/128;
-            const gal=roundQuarterGal(galRaw);
+            const gal=roundQuarterGal(fl/128);
             const sizeGal=(prod && prod.unit==='gal'?prod.size: (prod && prod.unit==='qt'?0.25:gal));
             const cont=containersNeeded(gal,sizeGal);
             steps.push({title:`Lower pH to ${pHTarget}`,details:`about ${round2(gal)} gal 31.45% muriatic acid`,prod:prod,units:cont.units,usePct:cont.usePct});
@@ -191,8 +201,7 @@
           const hasLC=products.some(p=>p.type==='liquidChlorine');
           if(hasLC){
             const prod=pickProduct(products,'liquidChlorine');
-            const galRaw=galLCForFC(delta,V);
-            const gal=roundQuarterGal(galRaw);
+            const gal=roundQuarterGal(galLCForFC(delta,V));
             const size=(prod && prod.unit==='gal'?prod.size:gal+1);
             const cont=containersNeeded(gal,size);
             steps.push({title:`Raise FC to ${fcTarget} ppm (Liquid)`,details:`about ${round2(gal)} gal liquid chlorine`,prod:prod,units:cont.units,usePct:cont.usePct});
@@ -225,16 +234,36 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // Salt for SWG
+        // Salt for SWG with bag rounding and 3800 ppm cap
         if(profile.sanitizer==='swg' && Salt>0){
           const target=3200;
-          if(Salt<target-100){
-            const lbs=lbsSaltForDelta(target-Salt,V);
+          if(Salt<target-50){ // small deadband
+            const delta = target - Salt; // ppm needed to 3200
+            const lbsExact = lbsSaltForDelta(delta, V);
+
             const prod=pickProduct(products,'salt');
-            const size=(prod && prod.unit==='lb'?prod.size:lbs+1);
-            const cont=containersNeeded(lbs,size);
-            steps.push({title:`Raise Salt to ${target} ppm`,details:`${round2(lbs)} lb pool salt`,prod:prod,units:cont.units,usePct:cont.usePct});
-            notes.push('Add bags slowly to the deep end, brush to help dissolve. Wait 24h before re-checking cell.');
+            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40; // default to 40 lb bag
+
+            // nearest whole bag
+            let bags = Math.round(lbsExact / bagSize);
+
+            // compute final ppm if we add that many bags
+            const ppmAddedForBags = ppmFromSaltLbs(bags * bagSize, V);
+            let finalSalt = Salt + ppmAddedForBags;
+
+            // never exceed 3800 ppm; back off until safe
+            while(bags>0 && finalSalt>3800){
+              bags -= 1;
+              finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
+            }
+
+            // if rounding gave 0 bags, it means you're close enough; skip step
+            if(bags>0){
+              const lbs = bags * bagSize;
+              const cont={units:bags,usePct:100};
+              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod:prod,units:cont.units,usePct:cont.usePct});
+              notes.push('Add bags of salt slowly to the deep end, and brush to help dissolve. Wait ~24h before re-checking the cell.');
+            }
           }
         }
 
