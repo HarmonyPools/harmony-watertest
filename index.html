@@ -42,7 +42,7 @@
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
-    // Show any runtime error on the page (so we never look "blank")
+    // Visible error banner so the page never looks "blank"
     (function(){
       const box = document.getElementById('hp-warn');
       function show(msg){
@@ -51,7 +51,7 @@
       }
       window.addEventListener('error', (e)=> show('Script error: '+ (e.message||'unknown')));
       window.addEventListener('unhandledrejection', (e)=> show('Load error: '+ (e.reason&&e.reason.message ? e.reason.message : String(e.reason||'unknown'))));
-      window.hpShowWarn = show; // allow app to use it too
+      window.hpShowWarn = show;
     })();
   </script>
 
@@ -61,7 +61,7 @@
     // Your published CSV (read-only)
     const REMOTE_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR1HgxbWQ441jPd-mXIQV9Hu1uQTUQztXe6wEUS870HGAdArrs9eSDUoJJBX4waWAarA7fy-m66IPIm/pub?output=csv';
 
-    // Small helpers
+    // Helpers
     const round2=(n)=>Math.round(n*100)/100;
     const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
     const roundQuarterGal=(gal)=> gal<=0 ? 0 : Math.max(0.25, Math.round(gal*4)/4);
@@ -97,10 +97,10 @@
     // Your FC rule
     const galLCForFC = (dFC, gal)=> dFC<=0 ? 0 : (dFC/3)*(gal/10000);
     function lbsDichlorForFC(dFC, gal){
-      if(dFC<=0) return {lbs:0,cyaGain:0};
-      const lbs=(dFC/3)*(gal/10000);
-      const cyaGain = lbs*6*(10000/gal);
-      return {lbs,cyaGain};
+        if(dFC<=0) return {lbs:0,cyaGain:0};
+        const lbs=(dFC/3)*(gal/10000);
+        const cyaGain = lbs*6*(10000/gal);
+        return {lbs,cyaGain};
     }
 
     const lbsBicarbForTA = (dTA, gal)=> dTA<=0 ? 0 : (dTA/10)*1.4*(gal/10000);
@@ -126,10 +126,11 @@
       { name:'Stabilizer 4 lb', type:'stabilizer', size:4, unit:'lb', url:'' },
       { name:'Pool Salt 40 lb', type:'salt', size:40, unit:'lb', url:'' },
       { name:'Dichlor 25 lb', type:'dichlor', size:25, unit:'lb', pct:56, url:'' },
+      { name:'Oxidizer 1 lb', type:'oxidizer', size:1, unit:'lb', url:'' },        <!-- optional; sheet can override -->
       { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
     ];
 
-    // CSV loader with timeout + fuzzy headers for url/link
+    // CSV loader with timeout + fuzzy headers (incl. url/link)
     async function loadProductsFromCSV(url, timeoutMs=6000){
       const ctrl = new AbortController();
       const t = setTimeout(()=>ctrl.abort(), timeoutMs);
@@ -171,7 +172,8 @@
     function App(){
       const [profile,setProfile]=useState(()=>{ try{return JSON.parse(localStorage.getItem('hp_profile'))||{name:'Pool',volume:20000,sanitizer:'chlorine',surface:'plaster'};}catch(e){return {name:'Pool',volume:20000,sanitizer:'chlorine',surface:'plaster'};}});
       const [products,setProducts]=useState(()=>{ try{return JSON.parse(localStorage.getItem('hp_products'))||DEFAULT_PRODUCTS;}catch(e){return DEFAULT_PRODUCTS;}});
-      const [test,setTest]=useState({FC:'',CC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''});
+      // store TC (but also accept legacy CC for backwards compat)
+      const [test,setTest]=useState({FC:'',TC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''});
       const [plan,setPlan]=useState(null);
       const [shopping,setShopping]=useState([]);
       const [banner,setBanner]=useState('');
@@ -195,7 +197,14 @@
       const parseNum=(v)=>{ const n=parseFloat(String(v).replace(/,/g,'')); return isFinite(n)?n:0; };
 
       function generate(){
-        const V=parseNum(profile.volume), FC=parseNum(test.FC), pH=parseNum(test.pH), TA=parseNum(test.TA), CYA=parseNum(test.CYA), Salt=parseNum(test.Salt);
+        const V=parseNum(profile.volume),
+              FC=parseNum(test.FC),
+              TC=parseNum(test.TC || test.CC),       // accept legacy CC if present
+              pH=parseNum(test.pH),
+              TA=parseNum(test.TA),
+              CYA=parseNum(test.CYA),
+              Salt=parseNum(test.Salt);
+
         const steps=[], notes=[];
         let usedAcid=false, usedChlorine=false;
 
@@ -236,7 +245,17 @@
           }
         }
 
-        // CYA
+        // Oxidizer (non-chlorine shock): if FC and TC do not match → 1 lb per 10k gal
+        if(isFinite(FC) && isFinite(TC) && Math.abs(TC-FC) > 0.01){
+          const lbs = round2( (V/10000) * 1 );
+          const prod = pickProduct(products,'oxidizer');
+          const size=(prod && prod.unit==='lb'?prod.size:1);
+          const cont=containersNeeded(lbs,size);
+          steps.push({title:'Oxidize (non-chlorine shock)', details:`${lbs} lb oxidizer`, prod, units:cont.units, usePct:cont.usePct});
+          notes.push('Oxidizer: you can’t really “over-oxidize,” but it may nudge pH down slightly.');
+        }
+
+        // CYA raise if low
         const cyaTarget=profile.sanitizer==='swg'?70:40;
         if(CYA>0 && CYA<cyaTarget-5){
           const lbs=lbsStabilizerForCYA(cyaTarget-CYA,V);
@@ -285,24 +304,29 @@
           notes.push('Broadcast slowly across the deep end with pump running. Retest TA in 12–24h.');
         }
 
-        // Salt with rounding and 3800 cap
-        if(profile.sanitizer==='swg' && Salt>0){
-          const target=3200;
-          if(Salt<target-50){
-            const lbsExact = lbsSaltForDelta(target - Salt, V);
-            const prod=pickProduct(products,'salt');
-            const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40;
-            let bags = Math.round(lbsExact / bagSize);
-            let finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
-            while(bags>0 && finalSalt>3800){
-              bags -= 1;
-              finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
-            }
-            if(bags>0){
-              const lbs = bags * bagSize;
-              steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod,units:bags,usePct:100});
-              notes.push('Add bags of salt slowly to the deep end, and brush to help dissolve. Wait ~24h before re-checking the cell.');
-            }
+        // Drain/refill advice for high CYA or high salt
+        if(CYA>180){
+          steps.push({title:'Lower CYA (too high)', details:'Drain a couple inches and refill with fresh water. Always keep water above the skimmer opening.', prod:null, units:0, usePct:0});
+        }
+        if(Salt>4000){
+          steps.push({title:'Lower Salt (too high)', details:'Drain a couple inches and refill with fresh water. Keep skimmer covered with water at all times.', prod:null, units:0, usePct:0});
+        }
+
+        // Salt raise with rounding and 3800 cap
+        if(profile.sanitizer==='swg' && Salt>0 && Salt<3200-50){
+          const lbsExact = lbsSaltForDelta(3200 - Salt, V);
+          const prod=pickProduct(products,'salt');
+          const bagSize = (prod && prod.unit==='lb' && prod.size>0) ? prod.size : 40;
+          let bags = Math.round(lbsExact / bagSize);
+          let finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
+          while(bags>0 && finalSalt>3800){
+            bags -= 1;
+            finalSalt = Salt + ppmFromSaltLbs(bags * bagSize, V);
+          }
+          if(bags>0){
+            const lbs = bags * bagSize;
+            steps.push({title:`Raise Salt to ~${Math.round(finalSalt)} ppm`,details:`${lbs} lb pool salt (~${bags} bag${bags>1?'s':''})`,prod,units:bags,usePct:100});
+            notes.push('Add bags of salt slowly to the deep end, and brush to help dissolve. Wait ~24h before re-checking the cell.');
           }
         }
 
@@ -328,7 +352,7 @@
               containers:s.units||1,
               size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
               url:(s.prod&&s.prod.url)?s.prod.url:'',
-              note:s.details+' (~'+(s.usePct||100)+'% of last container)'
+              note:s.details+(s.usePct? ' (~'+s.usePct+'% of last container)': '')
             });
           }
         }
@@ -342,25 +366,6 @@
       }
 
       // ---------- UI ----------
-      const Table = ({rows}) => (
-        <div style={{overflow:'auto'}}>
-          <table className="hp-table">
-            <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
-            <tbody>
-              {rows.map((it,i)=>(
-                <tr key={i}>
-                  <td>{it.name}</td>
-                  <td>{it.containers}</td>
-                  <td>{it.size}</td>
-                  <td>{it.note}</td>
-                  <td>{it.url ? <a href={it.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-
       return (
         <div className="hp-container">
           {banner && <div className="hp-banner" style={{marginBottom:12}}>{banner}</div>}
@@ -429,16 +434,34 @@
             <div className="hp-card">
               <h2 className="hp-h2">Enter Readings</h2>
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
-                {['FC','CC','pH','TA','CYA','Salt'].map(key=>(
-                  <div key={key}>
-                    <label className="hp-label">{key}</label>
-                    <input className="hp-input" type="number" step="any" value={test[key]} onChange={e=>setTest({...test,[key]:e.target.value})} />
-                  </div>
-                ))}
+                <div>
+                  <label className="hp-label">Free Chlorine (FC)</label>
+                  <input className="hp-input" type="number" step="any" value={test.FC} onChange={e=>setTest({...test,FC:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">Total Chlorine (TC)</label>
+                  <input className="hp-input" type="number" step="any" value={test.TC} onChange={e=>setTest({...test,TC:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">pH</label>
+                  <input className="hp-input" type="number" step="any" value={test.pH} onChange={e=>setTest({...test,pH:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">Total Alkalinity (TA)</label>
+                  <input className="hp-input" type="number" step="any" value={test.TA} onChange={e=>setTest({...test,TA:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">Cyanuric Acid (CYA)</label>
+                  <input className="hp-input" type="number" step="any" value={test.CYA} onChange={e=>setTest({...test,CYA:e.target.value})} />
+                </div>
+                <div>
+                  <label className="hp-label">Salt (ppm)</label>
+                  <input className="hp-input" type="number" step="any" value={test.Salt} onChange={e=>setTest({...test,Salt:e.target.value})} />
+                </div>
               </div>
               <div style={{marginTop:12,display:'flex',gap:8}}>
                 <button className="hp-btn" onClick={generate}>Generate Plan</button>
-                <button className="hp-ghost hp-btn" onClick={()=>{ setTest({FC:'',CC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''}); setPlan(null); setShopping([]); }}>Clear</button>
+                <button className="hp-ghost hp-btn" onClick={()=>{ setTest({FC:'',TC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''}); setPlan(null); setShopping([]); }}>Clear</button>
               </div>
             </div>
 
@@ -486,7 +509,7 @@
                             <div className="hp-note" style={{marginTop:4,display:'flex',gap:8,alignItems:'center'}}>
                               <span className="hp-chip">{s.prod.name}</span>
                               {s.prod.url ? <a href={s.prod.url} target="_blank" style={{color:'var(--sky)',textDecoration:'underline'}} rel="noreferrer">Buy</a> : <span style={{color:'#94a3b8'}}>—</span>}
-                              <span>Containers: {s.units} (~{s.usePct}% last one)</span>
+                              <span>Containers: {s.units} {s.usePct?`(~${s.usePct}% last one)`:''}</span>
                             </div>
                           )}
                         </li>
@@ -505,8 +528,11 @@
           <div className="hp-row" style={{marginTop:16}}>
             <div className="hp-card">
               <h2 className="hp-h2">Shopping List</h2>
-              <div id="hp-shop">
-                {/* filled after generate */}
+              <div style="overflow:auto">
+                <table className="hp-table">
+                  <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
+                  <tbody id="hp-shop-body"></tbody>
+                </table>
               </div>
             </div>
           </div>
