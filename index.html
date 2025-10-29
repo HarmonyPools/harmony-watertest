@@ -126,7 +126,7 @@
       { name:'Stabilizer 4 lb', type:'stabilizer', size:4, unit:'lb', url:'' },
       { name:'Pool Salt 40 lb', type:'salt', size:40, unit:'lb', url:'' },
       { name:'Dichlor 25 lb', type:'dichlor', size:25, unit:'lb', pct:56, url:'' },
-      { name:'Oxidizer 1 lb', type:'oxidizer', size:1, unit:'lb', url:'' },        <!-- optional; sheet can override -->
+      { name:'Oxidizer 1 lb', type:'oxidizer', size:1, unit:'lb', url:'' },
       { name:'Phosphate Remover 1 qt', type:'phosphateRemover', size:1, unit:'qt', url:'' },
     ];
 
@@ -333,36 +333,8 @@
         if(usedAcid && usedChlorine){ notes.push('Do not add chlorine and acid at the same time. Dose 30 minutes apart or at opposite ends of the pool to avoid fumes.'); }
         notes.push('Chlorine options: choose ONE (liquid or dichlor), not both.');
 
-        // Shopping list
-        const shop=[];
-        for(const s of steps){
-          if(s.type==='chlorineGroup'){
-            for(const o of s.options){
-              shop.push({
-                name:(o.prod&&o.prod.name)?o.prod.name:`Chlorine (${o.title})`,
-                containers:o.units||1,
-                size:(o.prod? (o.prod.size+' '+o.prod.unit+(o.prod.pack?(' x'+o.prod.pack):'')) : ''),
-                url:(o.prod&&o.prod.url)?o.prod.url:'',
-                note:o.details+' (~'+(o.usePct||100)+'% of last container)'
-              });
-            }
-          }else{
-            shop.push({
-              name:(s.prod&&s.prod.name)?s.prod.name:s.title,
-              containers:s.units||1,
-              size:(s.prod? (s.prod.size+' '+s.prod.unit+(s.prod.pack?(' x'+s.prod.pack):'')) : ''),
-              url:(s.prod&&s.prod.url)?s.prod.url:'',
-              note:s.details+(s.usePct? ' (~'+s.usePct+'% of last container)': '')
-            });
-          }
-        }
-
+        // Build plan (shopping list rendered within each step now)
         setPlan({steps,notes});
-        setShopping(shop);
-        const hist=JSON.parse(localStorage.getItem('hp_tests')||'[]');
-        hist.unshift({at:new Date().toISOString(),profile:profile,test:test});
-        while(hist.length>10) hist.pop();
-        localStorage.setItem('hp_tests',JSON.stringify(hist));
       }
 
       // ---------- UI ----------
@@ -461,7 +433,7 @@
               </div>
               <div style={{marginTop:12,display:'flex',gap:8}}>
                 <button className="hp-btn" onClick={generate}>Generate Plan</button>
-                <button className="hp-ghost hp-btn" onClick={()=>{ setTest({FC:'',TC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''}); setPlan(null); setShopping([]); }}>Clear</button>
+                <button className="hp-ghost hp-btn" onClick={()=>{ setTest({FC:'',TC:'',pH:'',TA:'',CYA:'',Salt:'',Temp:''}); setPlan(null); }}>Clear</button>
               </div>
             </div>
 
@@ -522,18 +494,6 @@
                   </div>
                 </div>
               )}
-            </div>
-          </div>
-
-          <div className="hp-row" style={{marginTop:16}}>
-            <div className="hp-card">
-              <h2 className="hp-h2">Shopping List</h2>
-              <div style="overflow:auto">
-                <table className="hp-table">
-                  <thead><tr><th>Product</th><th>Containers</th><th>Size</th><th>Notes</th><th>Link</th></tr></thead>
-                  <tbody id="hp-shop-body"></tbody>
-                </table>
-              </div>
             </div>
           </div>
         </div>
